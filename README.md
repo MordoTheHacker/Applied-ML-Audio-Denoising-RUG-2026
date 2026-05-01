@@ -69,7 +69,7 @@ Models are evaluated using the standard VoiceBank+DEMAND metrics:
 ## Team
 
 - Kristaps Melbardis s4697103
-- Member 2
+- Mihnea Burac s5613418
 - Member 3
 - Member 4
 
