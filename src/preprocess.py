@@ -210,9 +210,7 @@ class AudioPreprocessor:
         
         # Keep running lists for current batch
         batch_clean_mag = []
-        batch_clean_phase = []
         batch_noisy_mag = []
-        batch_noisy_phase = []
         
         total_chunks = 0
         
@@ -221,14 +219,12 @@ class AudioPreprocessor:
             noisy_chunks = self.preprocess_single(noisy_path)
             
             for clean_chunk, noisy_chunk in zip(clean_chunks, noisy_chunks):
-                clean_mag_spec, clean_phase_spec = clean_chunk
-                noisy_mag_spec, noisy_phase_spec = noisy_chunk
+                clean_mag_spec = clean_chunk
+                noisy_mag_spec = noisy_chunk
                 
                 # Add to batch
                 batch_clean_mag.append(clean_mag_spec.T)
-                batch_clean_phase.append(clean_phase_spec.T)
                 batch_noisy_mag.append(noisy_mag_spec.T)
-                batch_noisy_phase.append(noisy_phase_spec.T)
                 
                 total_chunks += 1
                 
@@ -236,27 +232,25 @@ class AudioPreprocessor:
                 if total_chunks % batch_size == 0:
                     self._save_batch(
                         output_dir, split, batch_num,
-                        batch_clean_mag, batch_clean_phase,
-                        batch_noisy_mag, batch_noisy_phase
+                        batch_clean_mag,
+                        batch_noisy_mag
                     )
                     batch_num += 1
                     # Clear batch
                     batch_clean_mag = []
-                    batch_clean_phase = []
                     batch_noisy_mag = []
-                    batch_noisy_phase = []
         
         # Save final partial batch
         if batch_clean_mag:
             self._save_batch(
                 output_dir, split, batch_num,
-                batch_clean_mag, batch_clean_phase,
-                batch_noisy_mag, batch_noisy_phase
+                batch_clean_mag,
+                batch_noisy_mag
             )
             batch_num += 1
         
         # Merge all batches into final file
-        self._merge_batches(output_dir, split, batch_num, total_chunks)
+        self._merge_batches(output_dir, split, batch_num)
         
         # Save config
         config = {
@@ -264,17 +258,39 @@ class AudioPreprocessor:
             "n_fft": self.n_fft,
             "hop_length": self.hop_length,
             "window": self.window,
-            "fixed_shape": self.fixed_shape,
+            "fixed_shape": list(self.fixed_shape),  # Convert tuple to list for JSON
             "chunk_duration": self.chunk_duration,
             "chunk_overlap": self.chunk_overlap,
-            "total_chunks": total_chunks,
         }
-        with open(output_dir / "preprocessing_config.json", "w") as f:
+
+        # Load existing config to preserve other splits' chunk counts
+        config_path = output_dir / "preprocessing_config.json"
+        if config_path.exists():
+            with open(config_path, "r") as f:
+                existing = json.load(f)
+            # Keep train/test chunks from previous runs
+            if "train_chunks" in existing:
+                config["train_chunks"] = existing["train_chunks"]
+            if "test_chunks" in existing:
+                config["test_chunks"] = existing["test_chunks"]
+
+        # Load the saved npz file and count actual chunks
+        npz_path = output_dir / f"{split}_spectrograms.npz"
+        if npz_path.exists():
+            data = np.load(npz_path)
+            n_chunks = len(data['clean_magnitude'])
+            config[f"{split}_chunks"] = int(n_chunks)
+            data.close()
+
+        # Recalculate total
+        config["total_chunks"] = config.get("train_chunks", 0) + config.get("test_chunks", 0)
+
+        with open(config_path, "w") as f:
             json.dump(config, f, indent=2)
-        
+
         print(f"Preprocessing {split} complete! Total chunks: {total_chunks}")
     
-    def _save_batch(self, output_dir, split, batch_num, clean_mag, clean_phase, noisy_mag, noisy_phase):
+    def _save_batch(self, output_dir, split, batch_num, clean_mag, noisy_mag):
         """Save a batch of chunks to a temporary npz file."""
         batch_path = output_dir / f"{split}_batch_{batch_num:04d}.npz"
         
@@ -286,25 +302,29 @@ class AudioPreprocessor:
         )
         print(f"Saved batch {batch_num} ({len(clean_mag)} chunks)")
     
-    def _merge_batches(self, output_dir, split, num_batches, total_chunks):
+    def _merge_batches(self, output_dir, split, num_batches):
         """Merge all batch files into a single npz file."""
         print(f"Merging {num_batches} batches...")
         
         all_clean_mag = []
         all_noisy_mag = []
         
+        # Load each batch and accumulate
         for batch_num in range(num_batches):
             batch_path = output_dir / f"{split}_batch_{batch_num:04d}.npz"
             if batch_path.exists():
                 data = np.load(batch_path)
-                all_clean_mag.append(data['clean_magnitude'])
-                all_noisy_mag.append(data['noisy_magnitude'])
+                all_clean_mag.append(data['clean_magnitude'].copy())  # COPY to release lock
+                all_noisy_mag.append(data['noisy_magnitude'].copy())
+                data.close()  # CLOSE explicitly
                 print(f"Loaded batch {batch_num}")
         
+        # Concatenate all
         print("Concatenating batches...")
         final_clean_mag = np.concatenate(all_clean_mag, axis=0)
         final_noisy_mag = np.concatenate(all_noisy_mag, axis=0)
         
+        # Save final file
         print("Saving final merged file...")
         np.savez(
             output_dir / f"{split}_spectrograms.npz",
@@ -312,6 +332,7 @@ class AudioPreprocessor:
             noisy_magnitude=final_noisy_mag,
         )
         
+        # Delete temporary batch files
         print("Cleaning up temporary batch files...")
         for batch_num in range(num_batches):
             batch_path = output_dir / f"{split}_batch_{batch_num:04d}.npz"
@@ -337,15 +358,23 @@ def main():
         chunk_overlap=0.0,       # No overlap to reduce chunks
     )
  
-    # Process train and test
+    # Process train and test, but skip if already exists
     for split in ["train", "test"]:
         split_dir = raw_dir / split
+        output_file = processed_dir / f"{split}_spectrograms.npz"
+        
+        # Check if already processed
+        if output_file.exists():
+            print(f"✓ {split}_spectrograms.npz already exists, skipping {split} split.")
+            continue
+        
         if split_dir.exists():
+            print(f"Processing {split} split...")
             preprocessor.preprocess_dataset(split_dir, processed_dir, split=split)
         else:
             print(f"Warning: {split_dir} not found, skipping {split} split.")
     
-    print("All preprocessing complete!")
+    print("Preprocessing complete!")
 
 if __name__ == "__main__":
     main()
