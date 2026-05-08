@@ -219,12 +219,12 @@ class AudioPreprocessor:
             noisy_chunks = self.preprocess_single(noisy_path)
             
             for clean_chunk, noisy_chunk in zip(clean_chunks, noisy_chunks):
-                clean_mag_spec = clean_chunk
-                noisy_mag_spec = noisy_chunk
+                clean_mag, _ = clean_chunk
+                noisy_mag, _ = noisy_chunk
                 
                 # Add to batch
-                batch_clean_mag.append(clean_mag_spec.T)
-                batch_noisy_mag.append(noisy_mag_spec.T)
+                batch_clean_mag.append(clean_mag.T)
+                batch_noisy_mag.append(noisy_mag.T)
                 
                 total_chunks += 1
                 
