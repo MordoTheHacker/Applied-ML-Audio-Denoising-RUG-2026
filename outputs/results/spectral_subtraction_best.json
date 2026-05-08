@@ -1,0 +1,17 @@
+{
+  "model": "Spectral Subtraction (best config)",
+  "hyperparameters": {
+    "alpha": 1.5,
+    "beta": 0.002,
+    "lambda_n": 0.95
+  },
+  "metrics": {
+    "PESQ": 2.2261755633354188,
+    "STOI": 0.9154023242669376,
+    "CSIG": 4.314406135213887,
+    "CBAK": 2.705063147075916,
+    "COVL": 3.3295788104784685,
+    "SSNR": 4.8075113834792464,
+    "SI_SDR": 0.5753757228347005
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "model": "Spectral Subtraction",
+  "hyperparameters": {
+    "frame_len": 0.025,
+    "frame_shift": 0.01,
+    "noise_frames": 20,
+    "lambda_n": 0.95,
+    "alpha": 1.5,
+    "beta": 0.002
+  },
+  "n_files": 824,
+  "metrics": {
+    "PESQ": 2.039046907743204,
+    "STOI": 0.9139541290845309,
+    "CSIG": 4.213874317754383,
+    "CBAK": 2.615193530096548,
+    "COVL": 3.182370802066741,
+    "SSNR": 4.595288605942321,
+    "SI_SDR": -0.006543278230270264
+  }
+}
