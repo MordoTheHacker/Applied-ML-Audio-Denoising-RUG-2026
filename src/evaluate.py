@@ -378,7 +378,7 @@ if __name__ == "__main__":
 
     # Average across all files
     print("\n")
-    avg = {k: np.mean(v) for k, v in all_results.items()}
+    avg = {k: float(np.mean(v)) for k, v in all_results.items()}
     print_results(avg, model_name="Noisy Baseline — Average over 824 test files")
 
     # Save results to file
