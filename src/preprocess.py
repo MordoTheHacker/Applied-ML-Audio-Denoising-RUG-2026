@@ -211,6 +211,8 @@ class AudioPreprocessor:
         # Keep running lists for current batch
         batch_clean_mag = []
         batch_noisy_mag = []
+        batch_clean_phase = []
+        batch_noisy_phase = []
         
         total_chunks = 0
         
@@ -219,12 +221,14 @@ class AudioPreprocessor:
             noisy_chunks = self.preprocess_single(noisy_path)
             
             for clean_chunk, noisy_chunk in zip(clean_chunks, noisy_chunks):
-                clean_mag_spec = clean_chunk
-                noisy_mag_spec = noisy_chunk
+                clean_log_mag, clean_phase = clean_chunk
+                noisy_log_mag, noisy_phase = noisy_chunk
                 
                 # Add to batch
-                batch_clean_mag.append(clean_mag_spec.T)
-                batch_noisy_mag.append(noisy_mag_spec.T)
+                batch_clean_mag.append(clean_log_mag.T)
+                batch_noisy_mag.append(noisy_log_mag.T)
+                batch_clean_phase.append(clean_phase.T)
+                batch_noisy_phase.append(noisy_phase.T)
                 
                 total_chunks += 1
                 
@@ -233,19 +237,25 @@ class AudioPreprocessor:
                     self._save_batch(
                         output_dir, split, batch_num,
                         batch_clean_mag,
-                        batch_noisy_mag
+                        batch_noisy_mag,
+                        batch_clean_phase,
+                        batch_noisy_phase
                     )
                     batch_num += 1
                     # Clear batch
                     batch_clean_mag = []
                     batch_noisy_mag = []
+                    batch_clean_phase = []
+                    batch_noisy_phase = []
         
         # Save final partial batch
         if batch_clean_mag:
             self._save_batch(
                 output_dir, split, batch_num,
                 batch_clean_mag,
-                batch_noisy_mag
+                batch_noisy_mag,
+                batch_clean_phase,
+                batch_noisy_phase
             )
             batch_num += 1
         
@@ -290,7 +300,7 @@ class AudioPreprocessor:
 
         print(f"Preprocessing {split} complete! Total chunks: {total_chunks}")
     
-    def _save_batch(self, output_dir, split, batch_num, clean_mag, noisy_mag):
+    def _save_batch(self, output_dir, split, batch_num, clean_mag, noisy_mag, clean_phase, noisy_phase):
         """Save a batch of chunks to a temporary npz file."""
         batch_path = output_dir / f"{split}_batch_{batch_num:04d}.npz"
         
@@ -298,48 +308,66 @@ class AudioPreprocessor:
             batch_path,
             clean_magnitude=np.array(clean_mag, dtype=np.float32),
             noisy_magnitude=np.array(noisy_mag, dtype=np.float32),
-            # Don't save phase — compute it during inference if needed
+            clean_phase=np.array(clean_phase, dtype=np.float32),
+            noisy_phase=np.array(noisy_phase, dtype=np.float32),
         )
         print(f"Saved batch {batch_num} ({len(clean_mag)} chunks)")
     
     def _merge_batches(self, output_dir, split, num_batches):
-        """Merge all batch files into a single npz file."""
-        print(f"Merging {num_batches} batches...")
+        """Merge batch files incrementally to minimize memory usage."""
+        print(f"Merging {num_batches} batches incrementally...")
         
-        all_clean_mag = []
-        all_noisy_mag = []
+        if num_batches == 0:
+            print("No batches to merge.")
+            return
         
-        # Load each batch and accumulate
-        for batch_num in range(num_batches):
+        # Start with batch 0
+        first_path = output_dir / f"{split}_batch_0000.npz"
+        data = np.load(first_path)
+        merged_clean_mag   = data['clean_magnitude'].copy()
+        merged_noisy_mag   = data['noisy_magnitude'].copy()
+        merged_clean_phase = data['clean_phase'].copy()
+        merged_noisy_phase = data['noisy_phase'].copy()
+        data.close()
+        first_path.unlink()
+        print(f"  Loaded batch 0 ({len(merged_clean_mag)} chunks)")
+
+        # Incrementally merge each subsequent batch
+        for batch_num in range(1, num_batches):
             batch_path = output_dir / f"{split}_batch_{batch_num:04d}.npz"
-            if batch_path.exists():
-                data = np.load(batch_path)
-                all_clean_mag.append(data['clean_magnitude'].copy())  # COPY to release lock
-                all_noisy_mag.append(data['noisy_magnitude'].copy())
-                data.close()  # CLOSE explicitly
-                print(f"Loaded batch {batch_num}")
-        
-        # Concatenate all
-        print("Concatenating batches...")
-        final_clean_mag = np.concatenate(all_clean_mag, axis=0)
-        final_noisy_mag = np.concatenate(all_noisy_mag, axis=0)
-        
-        # Save final file
+            if not batch_path.exists():
+                continue
+
+            data = np.load(batch_path)
+            new_clean_mag   = data['clean_magnitude'].copy()
+            new_noisy_mag   = data['noisy_magnitude'].copy()
+            new_clean_phase = data['clean_phase'].copy()
+            new_noisy_phase = data['noisy_phase'].copy()
+            data.close()
+            batch_path.unlink()  # Delete immediately after loading
+
+            # Concatenate with running merged arrays
+            merged_clean_mag   = np.concatenate([merged_clean_mag,   new_clean_mag],   axis=0)
+            merged_noisy_mag   = np.concatenate([merged_noisy_mag,   new_noisy_mag],   axis=0)
+            merged_clean_phase = np.concatenate([merged_clean_phase, new_clean_phase], axis=0)
+            merged_noisy_phase = np.concatenate([merged_noisy_phase, new_noisy_phase], axis=0)
+
+            print(f"  Merged batch {batch_num} → running total: {len(merged_clean_mag)} chunks")
+
+            # Free the new batch arrays immediately
+            del new_clean_mag, new_noisy_mag, new_clean_phase, new_noisy_phase
+
+        # Save final merged file
         print("Saving final merged file...")
         np.savez(
             output_dir / f"{split}_spectrograms.npz",
-            clean_magnitude=final_clean_mag,
-            noisy_magnitude=final_noisy_mag,
+            clean_magnitude=merged_clean_mag,
+            noisy_magnitude=merged_noisy_mag,
+            clean_phase=merged_clean_phase,
+            noisy_phase=merged_noisy_phase,
         )
-        
-        # Delete temporary batch files
-        print("Cleaning up temporary batch files...")
-        for batch_num in range(num_batches):
-            batch_path = output_dir / f"{split}_batch_{batch_num:04d}.npz"
-            if batch_path.exists():
-                batch_path.unlink()
-        
-        print(f"Merged file saved: {split}_spectrograms.npz")
+
+        print(f"Merged file saved: {split}_spectrograms.npz ({len(merged_clean_mag)} total chunks)")
 
  
 def main():
