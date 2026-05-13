@@ -1,0 +1,22 @@
+{
+  "model": "Geometric Spectral Subtraction",
+  "hyperparameters": {
+    "frame_len": 0.025,
+    "frame_shift": 0.01,
+    "noise_frames": 20,
+    "lambda_n": 0.95,
+    "alpha": 1.0,
+    "beta": 0.002,
+    "gamma": 1.0
+  },
+  "n_files": 824,
+  "metrics": {
+    "PESQ": 1.9969701590468583,
+    "STOI": 0.9118812845620583,
+    "CSIG": 4.212714426821603,
+    "CBAK": 2.5935568704726935,
+    "COVL": 3.1608843298180065,
+    "SSNR": 5.169712500362267,
+    "SI_SDR": 3.06139678420225
+  }
+}
