@@ -1,0 +1,14 @@
+{
+  "model": "Noisy Baseline (no denoising)",
+  "description": "Average metrics over all 824 test files. Use as floor for comparison.",
+  "n_files": 0,
+  "metrics": {
+    "PESQ": NaN,
+    "STOI": NaN,
+    "CSIG": NaN,
+    "CBAK": NaN,
+    "COVL": NaN,
+    "SSNR": NaN,
+    "SI_SDR": NaN
+  }
+}
