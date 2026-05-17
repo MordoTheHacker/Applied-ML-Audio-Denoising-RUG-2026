@@ -41,9 +41,11 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
 # Hyperparameter grid
+# Note: beta=0.05 added because gamma<1 amplifies the floor:
+#   gain^(1/gamma) with gamma=0.5 → gain^2, so beta=0.002 → 0.000004 ≈ silence
 ALPHAS = [1.0, 1.5, 2.0, 3.0]
-BETAS = [0.002, 0.01, 0.02]
-GAMMAS = [0.5, 1.0, 1.5, 2.0]
+BETAS = [0.002, 0.01, 0.02, 0.05]
+GAMMAS = [0.5, 1.0, 1.5, 2]
 LAMBDA_NS = [0.95, 0.98, 0.99]
 
 # Constraint: STOI must stay above this threshold
@@ -95,6 +97,11 @@ def evaluate_config(alpha, beta, gamma, lambda_n, clean_files, noisy_files):
             noisy = np.mean(noisy, axis=1)
 
         enhanced = model.enhance(noisy)
+        # DEBUG: warn if output is near-silent (gamma<1 amplifies floor)
+        max_val = float(np.max(np.abs(enhanced)))
+        if max_val < 1e-6:
+            print(f"  WARNING: near-silent output (max={max_val:.2e}) "
+                  f"α={alpha} β={beta} γ={gamma} λ={lambda_n}")
         results = evaluate_all(clean, enhanced, sr)
 
         for k, v in results.items():
