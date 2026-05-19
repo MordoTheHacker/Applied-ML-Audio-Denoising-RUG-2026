@@ -1,0 +1,10 @@
+{
+  "model": "Geometric Spectral Subtraction (best config)",
+  "hyperparameters": {
+    "alpha": 1.0,
+    "beta": 0.002,
+    "gamma": 0.5,
+    "lambda_n": 0.95
+  },
+  "metrics": {}
+}

@@ -1,0 +1,72 @@
+{
+  "noisy": {
+    "model": "Noisy Baseline (no denoising)",
+    "description": "Average metrics over all 824 test files. Use as floor for comparison.",
+    "n_files": 824,
+    "metrics": {
+      "PESQ": 1.9706772097106118,
+      "STOI": 0.9210125620780192,
+      "CSIG": 4.06568351719145,
+      "CBAK": 2.5883932167762334,
+      "COVL": 3.0794776267750392,
+      "SSNR": 1.5582027046391989,
+      "SI_SDR": 8.445536125335353
+    }
+  },
+  "spectral_ss": {
+    "model": "Spectral Subtraction",
+    "hyperparameters": {
+      "frame_len": 0.025,
+      "frame_shift": 0.01,
+      "noise_frames": 20,
+      "lambda_n": 0.95,
+      "alpha": 1.5,
+      "beta": 0.002
+    },
+    "n_files": 824,
+    "metrics": {
+      "PESQ": 2.039046907743204,
+      "STOI": 0.9139541290845309,
+      "CSIG": 4.213874317754383,
+      "CBAK": 2.615193530096548,
+      "COVL": 3.182370802066741,
+      "SSNR": 4.595288605942321,
+      "SI_SDR": -0.006543278230270264
+    }
+  },
+  "geometric_ss": {
+    "model": "Geometric Spectral Subtraction",
+    "hyperparameters": {
+      "frame_len": 0.025,
+      "frame_shift": 0.01,
+      "noise_frames": 20,
+      "lambda_n": 0.95,
+      "alpha": 3.0,
+      "beta": 0.05,
+      "gamma": 2
+    },
+    "n_files": 824,
+    "metrics": {
+      "PESQ": 2.204009169658411,
+      "STOI": 0.9145419865957456,
+      "CSIG": 4.32112519112088,
+      "CBAK": 2.6924857012703454,
+      "COVL": 3.327802652729246,
+      "SSNR": 5.364385662152739,
+      "SI_SDR": 5.988460645078902
+    }
+  },
+  "clean_oracle": {
+    "model": "Clean Reference (oracle)",
+    "n_files": 824,
+    "metrics": {
+      "PESQ": 4.643888473510742,
+      "STOI": 0.9999999999999993,
+      "CSIG": 5.0,
+      "CBAK": 3.853778690344434,
+      "COVL": 5.0,
+      "SSNR": 35.0,
+      "SI_SDR": 121.9339842007993
+    }
+  }
+}
