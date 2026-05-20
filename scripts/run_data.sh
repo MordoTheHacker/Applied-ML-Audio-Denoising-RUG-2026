@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=audio_data
-#SBATCH --output=logs/data_%j.log
-#SBATCH --error=logs/data_%j.err
+#SBATCH --job-name=audio_preprocess
+#SBATCH --output=logs/preprocess_%j.log
+#SBATCH --error=logs/preprocess_%j.err
 #SBATCH --partition=regular
 #SBATCH --time=02:00:00
 #SBATCH --cpus-per-task=4
@@ -9,72 +9,67 @@
 
 # ─────────────────────────────────────────────
 # run_data.sh
+#
+# SLURM job: Run preprocessing pipeline only.
+# Dataset must already be downloaded to data/raw/wavs/
 # ─────────────────────────────────────────────
 
 echo "============================================="
-echo "  Audio Denoising — Data Pipeline"
+echo "  Audio Denoising — Preprocessing"
 echo "  Job ID: $SLURM_JOB_ID"
 echo "  Node:   $SLURMD_NODENAME"
 echo "  Start:  $(date)"
 echo "============================================="
 
-# ── Environment Setup ──────────────────────────
-
-echo ""
-echo "Setting up Python environment..."
-
 module purge
 module load Python/3.11.3-GCCcore-12.3.0
 
-cd /scratch/s4697103/AppliedML/Applied-ML-Audio-Denoising-RUG-2026 || exit 1
-echo "Working directory: $(pwd)"
-
-mkdir -p logs
+cd /scratch/s4697103/AppliedML/Applied-ML-Audio-Denoising-RUG-2026
 
 source env/bin/activate
 
-echo "Python: $(which python)"
-echo "Python version: $(python --version)"
+# Force Python libraries to respect SLURM's allocated CPU footprint
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export TORCH_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
-# ── Step 1: Download Dataset ───────────────────
+echo "Python: $(which python)"
+
+mkdir -p logs
+
+# ── Verify dataset exists ─────────────────────
 
 echo ""
-echo "============================================="
-echo "  STEP 1: Downloading Dataset"
-echo "============================================="
+echo "Checking dataset..."
 
 TRAIN_DIR="data/raw/wavs/train/clean"
 TEST_DIR="data/raw/wavs/test/clean"
 
-if [ -d "$TRAIN_DIR" ] && [ "$(ls -A $TRAIN_DIR 2>/dev/null | wc -l)" -gt 1000 ]; then
-    echo "Dataset already downloaded. Skipping."
-    echo "  Train files: $(ls $TRAIN_DIR | wc -l)"
-    echo "  Test files:  $(ls $TEST_DIR | wc -l)"
-else
-    echo "Downloading VoiceBank+DEMAND from HuggingFace..."
-    python src/data.py
-
-    if [ $? -ne 0 ]; then
-        echo "ERROR: Dataset download failed."
-        exit 1
-    fi
-
-    echo "Download complete."
-    echo "  Train files: $(ls $TRAIN_DIR | wc -l)"
-    echo "  Test files:  $(ls $TEST_DIR | wc -l)"
+if [ ! -d "$TRAIN_DIR" ]; then
+    echo "ERROR: $TRAIN_DIR not found."
+    echo "Download the dataset first from the login node:"
+    echo "  python src/data.py"
+    exit 1
 fi
 
-# ── Step 2: Preprocess ────────────────────────
+TRAIN_COUNT=$(find "$TRAIN_DIR" -maxdepth 1 -type f | wc -l)
+TEST_COUNT=$(find "$TEST_DIR" -maxdepth 1 -type f | wc -l)
+echo "  Train files: $TRAIN_COUNT"
+echo "  Test files:  $TEST_COUNT"
 
-echo ""
-echo "============================================="
-echo "  STEP 2: Preprocessing Dataset"
-echo "============================================="
+if [ "$TRAIN_COUNT" -lt 1000 ]; then
+    echo "ERROR: Too few training files. Dataset may be incomplete."
+    exit 1
+fi
+
+# ── Check if already preprocessed ────────────
 
 TRAIN_NPZ="data/processed/train_spectrograms.npz"
 TEST_NPZ="data/processed/test_spectrograms.npz"
 
 if [ -f "$TRAIN_NPZ" ] && [ -f "$TEST_NPZ" ]; then
+    echo ""
     echo "Preprocessed data already exists. Skipping."
     python -c "
 import numpy as np
@@ -83,27 +78,32 @@ print(f'  Train chunks: {len(d[\"clean_magnitude\"]):,}')
 print(f'  Shape: {d[\"clean_magnitude\"].shape}')
 d.close()
 d = np.load('$TEST_NPZ')
-print(f'  Test chunks:  {len(d[\"clean_magnitude\"]):,}')
+print(f'  Test chunks: {len(d[\"clean_magnitude\"]):,}')
 d.close()
 "
-else
-    echo "Running preprocessing pipeline..."
-    python src/preprocess.py
-
-    if [ $? -ne 0 ]; then
-        echo "ERROR: Preprocessing failed."
-        exit 1
-    fi
-
-    if [ ! -f "$TRAIN_NPZ" ]; then
-        echo "ERROR: train_spectrograms.npz not found after preprocessing."
-        exit 1
-    fi
-
-    echo "Preprocessing complete."
+    exit 0
 fi
 
-# ── Verification ──────────────────────────────
+# ── Run preprocessing ─────────────────────────
+
+echo ""
+echo "============================================="
+echo "  Running Preprocessing Pipeline"
+echo "============================================="
+
+python src/preprocess.py
+
+if [ $? -ne 0 ]; then
+    echo "ERROR: Preprocessing failed."
+    exit 1
+fi
+
+# ── Verify output ─────────────────────────────
+
+if [ ! -f "$TRAIN_NPZ" ]; then
+    echo "ERROR: train_spectrograms.npz not found after preprocessing."
+    exit 1
+fi
 
 echo ""
 echo "============================================="
@@ -112,16 +112,12 @@ echo "============================================="
 
 python -c "
 import numpy as np
-from pathlib import Path
-
 train = np.load('data/processed/train_spectrograms.npz')
 test  = np.load('data/processed/test_spectrograms.npz')
-
 print(f'  Train chunks: {len(train[\"clean_magnitude\"]):,}')
 print(f'  Train shape:  {train[\"clean_magnitude\"].shape}')
 print(f'  Test chunks:  {len(test[\"clean_magnitude\"]):,}')
 print(f'  Test shape:   {test[\"clean_magnitude\"].shape}')
-
 train.close()
 test.close()
 print('  All checks passed.')
@@ -129,7 +125,7 @@ print('  All checks passed.')
 
 echo ""
 echo "============================================="
-echo "  Data pipeline complete."
+echo "  Preprocessing complete."
 echo "  End: $(date)"
 echo "  You can now run:"
 echo "    sbatch scripts/run_mlp.sh"
