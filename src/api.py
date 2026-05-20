@@ -20,7 +20,7 @@ from enum import Enum
 from contextlib import asynccontextmanager
 
 from models.spectral_subtraction import SpectralSubtraction
-from models.geometric_subtraction import GeometricSpectralSubtraction
+from models.geometric_spectral_subtraction import GeometricSpectralSubtraction
 from models.mlp import SpeechMLP
 from models.mlp import enhance_file as mlp_enhance
 from models.unet import UNet
