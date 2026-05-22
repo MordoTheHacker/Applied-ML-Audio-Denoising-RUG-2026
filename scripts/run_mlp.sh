@@ -6,7 +6,7 @@
 #SBATCH --gres=gpu:a100:1
 #SBATCH --time=02:00:00
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 
 # ─────────────────────────────────────────────
 # run_mlp.sh `sbatch --export=ALL,GITHUB_TOKEN="ghp_tokenHere" scripts/run_mlp.sh`
@@ -39,9 +39,9 @@ mkdir -p outputs/results
 echo "Python: $(which python)"
 echo "Python version: $(python --version)"
 
-# Upgrade/verify PyTorch inside the env
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --quiet
 pip install -r requirements.txt --quiet
+# 2. Force reinstall PyTorch with explicit CUDA 12.4 support LAST
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --force-reinstall --quiet
 
 echo ""
 python -c "

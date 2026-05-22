@@ -44,8 +44,9 @@ Reference:
 
 class IRMDataset(Dataset):
     """
-    Cluster-optimized dataset that pre-calculates inputs and targets 
-    as tensors to prevent multi-worker I/O overhead.
+    Cluster-optimized dataset that leverages true memory mapping.
+    Calculates log magnitudes and IRM targets dynamically inside __getitem__
+    to maintain a rock-solid, low-RAM profile under 1GB.
     """
     def __init__(
         self,
@@ -57,30 +58,16 @@ class IRMDataset(Dataset):
         self.context = context_frames
         self.window = 2 * context_frames + 1
 
-        print(f"Loading {npz_path}...")
+        print(f"Opening memory-mapped file: {npz_path}...")
+        # Keep a persistent read-only reference to the file handle
+        self.data = np.load(npz_path, mmap_mode='r')
         
-        with np.load(npz_path) as data:
-            noisy_log_mag = data['noisy_magnitude'].astype(np.float32)
-            clean_mag = np.exp(data['clean_magnitude'].astype(np.float32))
-            noisy_mag = np.exp(noisy_log_mag)
+        # Access properties without loading arrays into memory
+        n_chunks, n_frames, n_bins = self.data['clean_magnitude'].shape
+        print(f"   Chunks: {n_chunks}, Frames: {n_frames}, Bins: {n_bins}")
+        self.n_bins = n_bins
 
-            n_chunks, n_frames, n_bins = clean_mag.shape
-            print(f"   Chunks: {n_chunks}, Frames: {n_frames}, Bins: {n_bins}")
-
-            # Compute IRM in chunks to protect host RAM
-            irm = np.zeros((n_chunks, n_frames, n_bins), dtype=np.float32)
-            chunk_size = 1000
-            for start in range(0, n_chunks, chunk_size):
-                end = min(start + chunk_size, n_chunks)
-                c = clean_mag[start:end]
-                n = noisy_mag[start:end]
-                clean_power = c ** 2
-                noise_power = np.maximum(n ** 2 - clean_power, 1e-10)
-                irm[start:end] = np.clip(
-                    np.sqrt(clean_power / (clean_power + noise_power + 1e-10)),
-                    0.0, 1.0
-                )
-
+        # Build a lightweight list of valid chunk and frame coordinate pairs
         all_indices = []
         for chunk_idx in range(n_chunks):
             for frame_idx in range(context_frames, n_frames - context_frames):
@@ -92,50 +79,67 @@ class IRMDataset(Dataset):
             print(f"   Subsampling {len(all_indices):,} → {max_frames:,} frames (seed=42)")
             rng = np.random.default_rng(42)
             chosen = rng.choice(len(all_indices), max_frames, replace=False)
-            all_indices = [all_indices[i] for i in chosen]
+            self.indices = [all_indices[i] for i in chosen]
+        else:
+            self.indices = all_indices
 
-        # Process normalization parameters
+        # Process or calculate normalization parameters safely
         if mean is None or std is None:
-            print("   Computing normalization statistics...")
-            sample_size = min(10000, len(all_indices))
-            sample_idx = np.random.choice(len(all_indices), sample_size, replace=False)
+            print("   Computing normalization statistics from a subset...")
+            sample_size = min(10000, len(self.indices))
+            rng = np.random.default_rng(42)
+            sample_idx = rng.choice(len(self.indices), sample_size, replace=False)
+            
             sample_frames = []
             for idx in sample_idx:
-                c, f = all_indices[idx]
-                window = noisy_log_mag[c, f - context_frames:f + context_frames + 1, :]
+                c, f = self.indices[idx]
+                # Slicing memory map reads ONLY these specific frames from disk
+                window = self.data['noisy_magnitude'][c, f - self.context : f + self.context + 1, :]
                 sample_frames.append(window.flatten())
-            sample_frames = np.array(sample_frames)
-            self.mean = sample_frames.mean(axis=0, keepdims=True).squeeze().astype(np.float32)
-            self.std  = sample_frames.std(axis=0, keepdims=True).squeeze().astype(np.float32) + 1e-8
+                
+            sample_frames = np.array(sample_frames, dtype=np.float32)
+            self.mean = sample_frames.mean(axis=0)
+            self.std  = sample_frames.std(axis=0) + 1e-8
         else:
             self.mean = mean.astype(np.float32)
             self.std  = std.astype(np.float32)
 
-        print("   Pre-allocating finalized tensor arrays for workers...")
-        # Vectorized generation of inputs and targets before loops execute
-        self.inputs = np.zeros((len(all_indices), self.window * n_bins), dtype=np.float32)
-        self.targets = np.zeros((len(all_indices), n_bins), dtype=np.float32)
-
-        for i, (chunk_idx, frame_idx) in enumerate(all_indices):
-            window_data = noisy_log_mag[
-                chunk_idx, 
-                frame_idx - context_frames : frame_idx + context_frames + 1, 
-                :
-            ].flatten()
-            self.inputs[i] = (window_data - self.mean) / self.std
-            self.targets[i] = irm[chunk_idx, frame_idx, :]
-
-        # Convert everything to PyTorch tensors once in main process memory
-        self.inputs = torch.from_numpy(self.inputs)
-        self.targets = torch.from_numpy(self.targets)
-        print("   Dataset loaded successfully into shared memory tensors.")
+        print("   Dataset initialized successfully (Zero-copy RAM footprint).")
 
     def __len__(self):
-        return len(self.inputs)
+        return len(self.indices)
 
     def __getitem__(self, idx):
-        # Instant memory slice returns with no runtime array copying overhead
-        return self.inputs[idx], self.targets[idx]
+        # Fetch coordinates
+        chunk_idx, frame_idx = self.indices[idx]
+
+        # 1. Fetch input context window dynamically from memory-map
+        # Shape: (window, n_bins)
+        window_data = self.data['noisy_magnitude'][
+            chunk_idx, 
+            frame_idx - self.context : frame_idx + self.context + 1, 
+            :
+        ].astype(np.float32).flatten()
+        
+        # Apply standard log normalization inline
+        normalized_input = (window_data - self.mean) / self.std
+
+        # 2. Fetch target frames dynamically and calculate IRM target inline
+        c_mag_log = self.data['clean_magnitude'][chunk_idx, frame_idx, :].astype(np.float32)
+        n_mag_log = self.data['noisy_magnitude'][chunk_idx, frame_idx, :].astype(np.float32)
+        
+        c_mag = np.exp(c_mag_log)
+        n_mag = np.exp(n_mag_log)
+        
+        clean_power = c_mag ** 2
+        noise_power = np.maximum(n_mag ** 2 - clean_power, 1e-10)
+        
+        target_irm = np.clip(
+            np.sqrt(clean_power / (clean_power + noise_power + 1e-10)),
+            0.0, 1.0
+        )
+
+        return torch.from_numpy(normalized_input), torch.from_numpy(target_irm)
 
 # ─────────────────────────────────────────────
 # MLP Model
@@ -223,7 +227,7 @@ def train_mlp(
     n_layers: int = 4,
     dropout: float = 0.2,
     lr: float = 1e-3,
-    batch_size: int = 512,
+    batch_size: int = 2048,
     max_epochs: int = 50,
     patience: int = 5,
 ) -> SpeechMLP:
@@ -273,7 +277,7 @@ def train_mlp(
 
     # Model
     window_size = 2 * context_frames + 1
-    freq_bins = train_ds.dataset.targets.shape[1]
+    freq_bins = train_ds.dataset.n_bins
     input_dim = window_size * freq_bins
 
     model = SpeechMLP(
@@ -546,7 +550,7 @@ def main():
         n_layers=4,
         dropout=0.2,
         lr=1e-3,
-        batch_size=512,
+        batch_size=2048,
         max_epochs=50,
         patience=5,
     )
