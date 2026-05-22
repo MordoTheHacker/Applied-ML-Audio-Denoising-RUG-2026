@@ -44,19 +44,9 @@ Reference:
 
 class IRMDataset(Dataset):
     """
-    Dataset that loads preprocessed NPZ spectrograms and computes
-    the Ideal Ratio Mask (IRM) on-the-fly.
-
-    IRM(t, f) = |S(t,f)| / (|S(t,f)| + |N(t,f)|)
-    where S = clean, N = noise = noisy - clean
-
-    Args:
-        npz_path:      Path to train_spectrograms.npz or test_spectrograms.npz
-        context_frames: Number of frames on each side (total window = 2*context+1)
-        mean:          Global mean for input standardization (computed from train)
-        std:           Global std for input standardization (computed from train)
+    Cluster-optimized dataset that pre-calculates inputs and targets 
+    as tensors to prevent multi-worker I/O overhead.
     """
-
     def __init__(
         self,
         npz_path: Path,
@@ -68,49 +58,51 @@ class IRMDataset(Dataset):
         self.window = 2 * context_frames + 1
 
         print(f"Loading {npz_path}...")
-        data = np.load(npz_path)
+        
+        with np.load(npz_path) as data:
+            noisy_log_mag = data['noisy_magnitude'].astype(np.float32)
+            clean_mag = np.exp(data['clean_magnitude'].astype(np.float32))
+            noisy_mag = np.exp(noisy_log_mag)
 
-        # Log-magnitude spectrograms: shape (N, time_frames, freq_bins)
-        # We stored log magnitudes — convert back to linear for IRM
-        self.noisy_log_mag = data['noisy_magnitude'].astype(np.float32)  # log scale — fed to MLP
-        self.clean_mag = np.exp(data['clean_magnitude'].astype(np.float32))  # linear — for IRM target
-        self.noisy_mag = np.exp(data['noisy_magnitude'].astype(np.float32))  # linear — for IRM target
-        data.close()
+            n_chunks, n_frames, n_bins = clean_mag.shape
+            print(f"   Chunks: {n_chunks}, Frames: {n_frames}, Bins: {n_bins}")
 
-        n_chunks, n_frames, n_bins = self.clean_mag.shape
-        print(f"  Chunks: {n_chunks}, Frames: {n_frames}, Bins: {n_bins}")
+            # Compute IRM in chunks to protect host RAM
+            irm = np.zeros((n_chunks, n_frames, n_bins), dtype=np.float32)
+            chunk_size = 1000
+            for start in range(0, n_chunks, chunk_size):
+                end = min(start + chunk_size, n_chunks)
+                c = clean_mag[start:end]
+                n = noisy_mag[start:end]
+                clean_power = c ** 2
+                noise_power = np.maximum(n ** 2 - clean_power, 1e-10)
+                irm[start:end] = np.clip(
+                    np.sqrt(clean_power / (clean_power + noise_power + 1e-10)),
+                    0.0, 1.0
+                )
 
-        # Compute IRM: shape (N, time_frames, freq_bins)
-        # IRM = |S| / (|S| + |N - S|)  where |N - S| approximates noise
-        # Since we have clean and noisy magnitude (not complex), approximate:
-        # noise_mag ≈ max(noisy_mag - clean_mag, 0)
-        clean_power = self.clean_mag ** 2
-        noise_power = np.maximum(self.noisy_mag ** 2 - clean_power, 1e-10)
-        self.irm = np.sqrt(clean_power / (clean_power + noise_power + 1e-10))
-        self.irm = np.clip(self.irm, 0.0, 1.0).astype(np.float32)
-
-        del self.clean_mag
-        del self.noisy_mag      
-
-        # Flatten chunks×frames into one big list of (chunk_idx, frame_idx) pairs
-        # Skip frames too close to edges (need context on both sides)
-        self.indices = []
+        all_indices = []
         for chunk_idx in range(n_chunks):
             for frame_idx in range(context_frames, n_frames - context_frames):
-                self.indices.append((chunk_idx, frame_idx))
+                all_indices.append((chunk_idx, frame_idx))
 
-        print(f"  Total frames (with context={context_frames}): {len(self.indices):,}")
+        # Subsample indices down to 1M target frames
+        max_frames = 1_000_000
+        if len(all_indices) > max_frames:
+            print(f"   Subsampling {len(all_indices):,} → {max_frames:,} frames (seed=42)")
+            rng = np.random.default_rng(42)
+            chosen = rng.choice(len(all_indices), max_frames, replace=False)
+            all_indices = [all_indices[i] for i in chosen]
 
-        # Compute or store normalization stats
+        # Process normalization parameters
         if mean is None or std is None:
-            print("  Computing normalization statistics...")
-            # Sample 10k frames for speed
-            sample_size = min(10000, len(self.indices))
-            sample_idx = np.random.choice(len(self.indices), sample_size, replace=False)
+            print("   Computing normalization statistics...")
+            sample_size = min(10000, len(all_indices))
+            sample_idx = np.random.choice(len(all_indices), sample_size, replace=False)
             sample_frames = []
             for idx in sample_idx:
-                c, f = self.indices[idx]
-                window = self.noisy_log_mag[c, f - context_frames:f + context_frames + 1, :]
+                c, f = all_indices[idx]
+                window = noisy_log_mag[c, f - context_frames:f + context_frames + 1, :]
                 sample_frames.append(window.flatten())
             sample_frames = np.array(sample_frames)
             self.mean = sample_frames.mean(axis=0, keepdims=True).squeeze().astype(np.float32)
@@ -119,31 +111,31 @@ class IRMDataset(Dataset):
             self.mean = mean.astype(np.float32)
             self.std  = std.astype(np.float32)
 
+        print("   Pre-allocating finalized tensor arrays for workers...")
+        # Vectorized generation of inputs and targets before loops execute
+        self.inputs = np.zeros((len(all_indices), self.window * n_bins), dtype=np.float32)
+        self.targets = np.zeros((len(all_indices), n_bins), dtype=np.float32)
+
+        for i, (chunk_idx, frame_idx) in enumerate(all_indices):
+            window_data = noisy_log_mag[
+                chunk_idx, 
+                frame_idx - context_frames : frame_idx + context_frames + 1, 
+                :
+            ].flatten()
+            self.inputs[i] = (window_data - self.mean) / self.std
+            self.targets[i] = irm[chunk_idx, frame_idx, :]
+
+        # Convert everything to PyTorch tensors once in main process memory
+        self.inputs = torch.from_numpy(self.inputs)
+        self.targets = torch.from_numpy(self.targets)
+        print("   Dataset loaded successfully into shared memory tensors.")
+
     def __len__(self):
-        return len(self.indices)
+        return len(self.inputs)
 
     def __getitem__(self, idx):
-        chunk_idx, frame_idx = self.indices[idx]
-
-        # Input: context window of noisy magnitude frames
-        # Shape: (window_size * freq_bins,)
-        noisy_window = self.noisy_log_mag[
-            chunk_idx,
-            frame_idx - self.context : frame_idx + self.context + 1,
-            :
-        ].flatten()
-
-        # Standardize: (x - mean) / std
-        noisy_window = (noisy_window - self.mean) / self.std
-
-        # Target: IRM for the center frame only
-        # Shape: (freq_bins,)
-        irm_target = self.irm[chunk_idx, frame_idx, :]
-
-        return (
-            torch.tensor(noisy_window, dtype=torch.float32),
-            torch.tensor(irm_target, dtype=torch.float32),
-        )
+        # Instant memory slice returns with no runtime array copying overhead
+        return self.inputs[idx], self.targets[idx]
 
 # ─────────────────────────────────────────────
 # MLP Model
@@ -221,8 +213,10 @@ class SpeechMLP(nn.Module):
 # ─────────────────────────────────────────────
 
 def train_mlp(
-    train_npz: Path,
-    val_npz: Path,
+    train_ds: Dataset,
+    val_ds: Dataset,
+    train_mean: np.ndarray,
+    train_std: np.ndarray,
     output_dir: Path,
     context_frames: int = 5,
     hidden_dim: int = 1024,
@@ -258,33 +252,28 @@ def train_mlp(
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"\nDevice: {device}")
 
-    # Datasets
-    print("\nLoading training data...")
-    train_ds = IRMDataset(train_npz, context_frames=context_frames)
-    print("\nLoading validation data...")
-    val_ds = IRMDataset(
-        val_npz,
-        context_frames=context_frames,
-        mean=train_ds.mean,
-        std=train_ds.std,
-    )
-
     # Save normalization stats for inference
-    np.save(output_dir / 'norm_mean.npy', train_ds.mean)
-    np.save(output_dir / 'norm_std.npy', train_ds.std)
+    np.save(output_dir / 'norm_mean.npy', train_mean)
+    np.save(output_dir / 'norm_std.npy', train_std)
 
     train_loader = DataLoader(
-        train_ds, batch_size=batch_size, shuffle=True,
-        num_workers=0, pin_memory=(device.type == 'cuda')
+        train_ds, 
+        batch_size=batch_size, 
+        shuffle=True,
+        num_workers=2, 
+        pin_memory=(device.type == 'cuda'),
+        persistent_workers=True,
+        drop_last=True, # Protects BatchNorm1d from single-sample remainder batches
     )
     val_loader = DataLoader(
         val_ds, batch_size=batch_size, shuffle=False,
-        num_workers=0, pin_memory=(device.type == 'cuda')
+        num_workers=2, pin_memory=(device.type == 'cuda'),
+        persistent_workers=True,
     )
 
     # Model
     window_size = 2 * context_frames + 1
-    freq_bins = train_ds.noisy_log_mag.shape[2]
+    freq_bins = train_ds.dataset.targets.shape[1]
     input_dim = window_size * freq_bins
 
     model = SpeechMLP(
@@ -320,7 +309,7 @@ def train_mlp(
 
         model.train()
         train_loss = 0.0
-        for x, y in tqdm(train_loader, desc=f"Epoch {epoch+1:02d} Train", leave=False):
+        for x, y in tqdm(train_loader, desc=f"Epoch {epoch+1:02d} Train", mininterval=10.0, leave=False):
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
             pred = model(x)
@@ -335,7 +324,7 @@ def train_mlp(
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
-            for x, y in tqdm(val_loader, desc=f"Epoch {epoch+1:02d} Val  ", leave=False):
+            for x, y in tqdm(val_loader, desc=f"Epoch {epoch+1:02d} Val  ", mininterval=10.0, leave=False):
                 x, y = x.to(device), y.to(device)
                 pred = model(x)
                 val_loss += criterion(pred, y).item() * x.size(0)
@@ -496,9 +485,12 @@ def evaluate_dataset(
 
     for cf, nf in tqdm(zip(clean_files, noisy_files), total=len(clean_files)):
         clean, file_sr = sf.read(cf)
-        clean = clean.astype(np.float64)
         if len(clean.shape) > 1:
             clean = np.mean(clean, axis=1)
+        if file_sr != sr:
+            clean = librosa.resample(clean, orig_sr=file_sr, target_sr=sr)
+            file_sr = sr
+        clean = clean.astype(np.float64)
 
         enhanced = enhance_file(nf, model, mean, std, context_frames=context_frames, sr=sr)
 
@@ -523,12 +515,33 @@ def main():
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # 1. Load the complete training dataset profile
+    print("\nLoading master dataset...")
+    full_train_ds = IRMDataset(TRAIN_NPZ, context_frames=5)
+
+    # 2. Split into clean 80/20 train and validation sets to fix the test leak
+    train_size = int(0.8 * len(full_train_ds))
+    val_size = len(full_train_ds) - train_size
+    print(f"Splitting dataset: {train_size:,} train samples, {val_size:,} validation samples")
+    
+    # Secure reproducibility across runs using a generator seed
+    generator = torch.Generator().manual_seed(42)
+    train_ds, val_ds = torch.utils.data.random_split(
+        full_train_ds, [train_size, val_size], generator=generator
+    )
+
+    # Note: Because random_split returns subset wrappers, we pull stats from the base object
+    train_mean = full_train_ds.mean
+    train_std  = full_train_ds.std
+
     # Train
     model = train_mlp(
-        train_npz=TRAIN_NPZ,
-        val_npz=TEST_NPZ,
+        train_ds=train_ds,
+        val_ds=val_ds,
+        train_mean=train_mean,
+        train_std=train_std,
         output_dir=OUTPUT_DIR,
-        context_frames=5,      # 11 frames total (5 past + current + 5 future)
+        context_frames=5,
         hidden_dim=1024,
         n_layers=4,
         dropout=0.2,
