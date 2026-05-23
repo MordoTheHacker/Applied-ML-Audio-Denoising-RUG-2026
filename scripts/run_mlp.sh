@@ -40,8 +40,7 @@ echo "Python: $(which python)"
 echo "Python version: $(python --version)"
 
 pip install -r requirements.txt --quiet
-# 2. Force reinstall PyTorch with explicit CUDA 12.4 support LAST
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --force-reinstall --quiet
+pip install torch==2.1.0 torchvision --index-url https://download.pytorch.org/whl/cu121 --quiet
 
 echo ""
 python -c "
