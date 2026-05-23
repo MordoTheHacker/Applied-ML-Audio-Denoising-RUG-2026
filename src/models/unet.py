@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import torch
 import torch.nn as nn
@@ -79,35 +80,22 @@ class SpectrogramDataset(Dataset):
         std: float = None,
     ):
         print(f"Loading {npz_path}...")
-        data = np.load(npz_path)
+        try:
+            data = np.load(npz_path, mmap_mode='r')
+        except Exception:
+            data = np.load(npz_path)
 
         # Shape: (N, time_frames, freq_bins) = (N, 256, 257)
-        noisy_log = data['noisy_magnitude'].astype(np.float32)
-        clean_log = data['clean_magnitude'].astype(np.float32)
-        data.close()
-
-        # Drop the 257th bin to (N, 256, 256) — makes dims powers of 2
-        noisy_log = noisy_log[:, :, :256]
-        clean_log = clean_log[:, :, :256]
+        noisy_log = data['noisy_magnitude'][:, :, :256]
+        clean_log = data['clean_magnitude'][:, :, :256]
+        self._data = data
 
         n_chunks, n_frames, n_bins = noisy_log.shape
         print(f"  Chunks: {n_chunks}, Shape per chunk: ({n_frames}, {n_bins})")
 
-        # Convert log to linear for IRM computation
-        clean_mag = np.exp(clean_log)
-        noisy_mag = np.exp(noisy_log)
-
-        # Square-root IRM: sqrt(|S|^2 / (|S|^2 + |N|^2))
-        clean_power = clean_mag ** 2
-        noise_power = np.maximum(noisy_mag ** 2 - clean_power, 1e-10)
-        irm = np.sqrt(clean_power / (clean_power + noise_power + 1e-10))
-        self.irm = np.clip(irm, 0.0, 1.0).astype(np.float32)
-
-        # Free linear arrays
-        del clean_mag, noisy_mag, clean_log
-
-        # Store log-magnitude for input
-        self.noisy_log = noisy_log  # (N, 256, 256)
+        # Keep on-disk or lazy views and avoid a full-memory IRM buffer
+        self.noisy_log = noisy_log
+        self.clean_log = clean_log
 
         # Compute normalization stats
         if mean is None or std is None:
@@ -125,12 +113,20 @@ class SpectrogramDataset(Dataset):
         return len(self.noisy_log)
 
     def __getitem__(self, idx):
-        # Normalize input
-        x = (self.noisy_log[idx] - self.mean) / self.std  # (256, 256)
+        noisy_log = self.noisy_log[idx]
+        clean_log = self.clean_log[idx]
 
-        # Add channel dimension: (1, 256, 256)
-        x = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
-        y = torch.tensor(self.irm[idx], dtype=torch.float32).unsqueeze(0)
+        # Compute IRM on the fly to avoid storing a second huge array in memory
+        clean_mag = np.exp(clean_log).astype(np.float32)
+        noisy_mag = np.exp(noisy_log).astype(np.float32)
+        clean_power = clean_mag ** 2
+        noise_power = np.maximum(noisy_mag ** 2 - clean_power, 1e-10)
+        irm = np.sqrt(clean_power / (clean_power + noise_power + 1e-10))
+        irm = np.clip(irm, 0.0, 1.0).astype(np.float32)
+
+        # Normalize input and convert to tensor
+        x = torch.tensor((noisy_log - self.mean) / self.std, dtype=torch.float32).unsqueeze(0)
+        y = torch.tensor(irm, dtype=torch.float32).unsqueeze(0)
 
         return x, y
 
@@ -317,14 +313,17 @@ def train_unet(
     np.save(output_dir / 'norm_mean.npy', np.array([train_ds.mean]))
     np.save(output_dir / 'norm_std.npy',  np.array([train_ds.std]))
 
+    use_workers = False if os.name == 'nt' else True
+    worker_count = 2 if (use_workers and device.type == 'cuda') else 0
+
     train_loader = DataLoader(
         train_ds, batch_size=batch_size, shuffle=True,
-        num_workers=2 if device.type == 'cuda' else 0,
+        num_workers=worker_count,
         pin_memory=(device.type == 'cuda'),
     )
     val_loader = DataLoader(
         val_ds, batch_size=batch_size, shuffle=False,
-        num_workers=2 if device.type == 'cuda' else 0,
+        num_workers=worker_count,
         pin_memory=(device.type == 'cuda'),
     )
 
@@ -561,6 +560,15 @@ def evaluate_dataset(
     avg = {k: float(np.mean(v)) for k, v in all_results.items() if v}
     return avg
 
+def load_scalar(path):
+    arr = np.load(path, allow_pickle=True)
+
+    # handle scalar saved as array or 0-d tensor
+    if isinstance(arr, np.ndarray):
+        return float(arr.item() if arr.ndim == 0 or arr.size == 1 else arr.reshape(-1)[0])
+
+    return float(arr)
+
 def main():
     TRAIN_NPZ   = Path("data/processed/train_spectrograms.npz")
     TEST_NPZ    = Path("data/processed/test_spectrograms.npz")
@@ -587,9 +595,8 @@ def main():
         patience=5,
     )
 
-    # Load normalization stats
-    mean = float(np.load(OUTPUT_DIR / 'norm_mean.npy'))
-    std  = float(np.load(OUTPUT_DIR / 'norm_std.npy'))
+    mean = load_scalar(OUTPUT_DIR / 'norm_mean.npy')
+    std  = load_scalar(OUTPUT_DIR / 'norm_std.npy')
 
     # Evaluate
     avg = evaluate_dataset(

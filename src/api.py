@@ -628,6 +628,8 @@ def enhance(
     # Enhance
     try:
         enhanced = enhance_audio(y, model)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Enhancement failed: {e}")
         raise HTTPException(
@@ -730,6 +732,8 @@ def evaluate(
     # Enhance
     try:
         enhanced = enhance_audio(noisy, model)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Enhancement failed: {str(e)}")
 
