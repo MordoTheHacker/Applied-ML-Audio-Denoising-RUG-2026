@@ -39,8 +39,9 @@ mkdir -p outputs/results
 echo "Python: $(which python)"
 echo "Python version: $(python --version)"
 
-pip install -r requirements.txt --quiet
+pip install "numpy<2" --quiet
 pip install torch==2.1.0 torchvision --index-url https://download.pytorch.org/whl/cu121 --quiet
+pip install -r requirements.txt --quiet
 
 echo ""
 python -c "

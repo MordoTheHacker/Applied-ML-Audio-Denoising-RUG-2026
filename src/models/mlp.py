@@ -276,14 +276,14 @@ def train_mlp(
         train_ds, 
         batch_size=batch_size, 
         shuffle=True,
-        num_workers=2, 
+        num_workers=0, 
         pin_memory=(device.type == 'cuda'),
         persistent_workers=True,
         drop_last=True, # Protects BatchNorm1d from single-sample remainder batches
     )
     val_loader = DataLoader(
         val_ds, batch_size=batch_size, shuffle=False,
-        num_workers=2, pin_memory=(device.type == 'cuda'),
+        num_workers=0, pin_memory=(device.type == 'cuda'),
         persistent_workers=True,
     )
 
