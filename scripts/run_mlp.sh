@@ -24,11 +24,15 @@ echo "============================================="
 echo ""
 echo "Setting up environment..."
 
+cd /scratch/s4697103/AppliedML/Applied-ML-Audio-Denoising-RUG-2026 || exit 1
+
 module purge
 module load Python/3.11.3-GCCcore-12.3.0
 module load CUDA/12.4.0
 
-cd /scratch/s4697103/AppliedML/Applied-ML-Audio-Denoising-RUG-2026 || exit 1
+rm -rf env
+
+python -m venv env
 source env/bin/activate
 
 # Create directories inside the repository workspace
@@ -40,8 +44,10 @@ echo "Python: $(which python)"
 echo "Python version: $(python --version)"
 
 pip install "numpy<2" --quiet
-pip install torch==2.1.0 torchvision --index-url https://download.pytorch.org/whl/cu121 --quiet
+pip install torch==2.1.0 torchvision==0.16.0 --index-url https://download.pytorch.org/whl/cu121
 pip install -r requirements.txt --quiet
+
+python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
 
 echo ""
 python -c "
