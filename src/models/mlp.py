@@ -94,34 +94,22 @@ class IRMDataset(Dataset):
             for fi in range(context_frames, n_frames - context_frames)
         ]
 
-        # Subsample to 1M
-        max_frames = 1_000_000
-        if len(all_indices) > max_frames:
-            print(f"  Subsampling {len(all_indices):,} → {max_frames:,} frames")
-            rng = np.random.default_rng(42)
-            chosen = rng.choice(len(all_indices), max_frames, replace=False)
-            self.indices = [all_indices[i] for i in chosen]
-        else:
-            self.indices = all_indices
+        
+        self.indices = all_indices
 
         print(f"  Final frames: {len(self.indices):,}")
 
         # Normalization stats
         if mean is None or std is None:
-            print("  Computing normalization statistics...")
-            sample_size = min(10000, len(self.indices))
-            rng = np.random.default_rng(42)
-            sample_idx = rng.choice(len(self.indices), sample_size, replace=False)
-            samples = np.array([
-                self.noisy_log_mag[
-                    self.indices[i][0],
-                    self.indices[i][1] - context_frames : self.indices[i][1] + context_frames + 1,
-                    :
-                ].flatten()
-                for i in sample_idx
-            ], dtype=np.float32)
-            self.mean = samples.mean(axis=0)
-            self.std  = samples.std(axis=0) + 1e-8
+            print("  Computing exact normalization statistics across all frames...")
+            # shape: (n_chunks * n_frames, n_bins)
+            flat_noisy = self.noisy_log_mag.reshape(-1, self.n_bins)
+            
+            # Compute exact channel-wise stats across the frequency bins
+            self.mean = flat_noisy.mean(axis=0)
+            self.std  = flat_noisy.std(axis=0) + 1e-8
+            
+            del flat_noisy
         else:
             self.mean = mean.astype(np.float32)
             self.std  = std.astype(np.float32)
@@ -134,17 +122,23 @@ class IRMDataset(Dataset):
     def __getitem__(self, idx):
         chunk_idx, frame_idx = self.indices[idx]
 
-        # All reads from RAM now — fast
-        window = self.noisy_log_mag[
+        # 1. Pull the 2D window slice: shape (11, 257)
+        # Keep it 2D so its frequency dimensions line up with your stats!
+        window_2d = self.noisy_log_mag[
             chunk_idx,
             frame_idx - self.context : frame_idx + self.context + 1,
             :
-        ].flatten()
+        ]
 
-        normalized = (window - self.mean) / self.std
+        # 2. Normalize across the frequency bins (broadcasting handles the 11 frames automatically)
+        normalized_2d = (window_2d - self.mean) / self.std
+
+        # 3. Flatten it now to feed into your 2827-dim MLP input layer
+        flattened_norm = normalized_2d.flatten()
+        
         irm_target = self.irm[chunk_idx, frame_idx, :]
 
-        return torch.from_numpy(normalized.copy()), torch.from_numpy(irm_target.copy())
+        return torch.from_numpy(flattened_norm.copy()), torch.from_numpy(irm_target.copy())
 
 # ─────────────────────────────────────────────
 # MLP Model
@@ -234,8 +228,8 @@ def train_mlp(
     dropout: float = 0.2,
     lr: float = 1e-3,
     batch_size: int = 2048,
-    max_epochs: int = 50,
-    patience: int = 5,
+    max_epochs: int = 150,
+    patience: int = 15,
 ) -> SpeechMLP:
     """
     Train the MLP with early stopping.
@@ -278,13 +272,11 @@ def train_mlp(
         shuffle=True,
         num_workers=0, 
         pin_memory=(device.type == 'cuda'),
-        persistent_workers=True,
         drop_last=True, # Protects BatchNorm1d from single-sample remainder batches
     )
     val_loader = DataLoader(
         val_ds, batch_size=batch_size, shuffle=False,
         num_workers=0, pin_memory=(device.type == 'cuda'),
-        persistent_workers=True,
     )
 
     # Model
@@ -452,10 +444,14 @@ def enhance_file(
     frame_indices = []
 
     for t in range(n_frames):
-        # Slice from the pre-padded log matrix
-        window = noisy_log_padded[:, t:t + window_size].T.flatten()
-        window_norm = (window - mean) / std
-        frames_batch.append(window_norm)
+        # We slice along the second dimension (columns/time)
+        window_2d = noisy_log_padded[:, t:t + window_size].T
+
+        window_norm_2d = (window_2d - mean) / std
+
+        window_norm_flat = window_norm_2d.flatten()
+        
+        frames_batch.append(window_norm_flat)
         frame_indices.append(t)
 
         if len(frames_batch) == batch_size or t == n_frames - 1:
@@ -522,6 +518,7 @@ def evaluate_dataset(
     return avg
 
 def main():
+
     TRAIN_NPZ   = Path("data/processed/train_spectrograms.npz")
     TEST_NPZ    = Path("data/processed/test_spectrograms.npz")
     CLEAN_DIR   = Path("data/raw/wavs/test/clean")
@@ -531,6 +528,7 @@ def main():
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    """
     # 1. Load the complete training dataset profile
     print("\nLoading master dataset...")
     full_train_ds = IRMDataset(TRAIN_NPZ, context_frames=5)
@@ -564,8 +562,8 @@ def main():
         dropout=0.2,
         lr=1e-3,
         batch_size=2048,
-        max_epochs=50,
-        patience=5,
+        max_epochs=150,
+        patience=15,
     )
 
     # Load normalization stats
@@ -603,6 +601,7 @@ def main():
         json.dump(output, f, indent=2)
     print(f"\nResults saved to {results_path}")
 
+
     # Compare against baselines
     baseline_path = RESULTS_DIR / "noisy_baseline.json"
     ss_path = RESULTS_DIR / "spectral_subtraction.json"
@@ -620,7 +619,78 @@ def main():
             b = baseline.get(metric, float('nan'))
             s = ss.get(metric, float('nan'))
             print(f"  {metric:<10} {b:>10.4f} {s:>10.4f} {score:>10.4f}")
+    """
+    # 1. SKIP TRAINING - Directly initialize the architecture shell
+    print("\nSkipping training! Initializing SpeechMLP structure...")
+    n_bins = 257  # Your frequency bins count
+    context_frames = 5
+    window_size = 2 * context_frames + 1
+    input_dim = window_size * n_bins
 
+    model = SpeechMLP(
+        input_dim=input_dim,
+        output_dim=n_bins,
+        hidden_dim=1024,
+        n_layers=4,
+        dropout=0.2,
+    ).to(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+
+    # 2. Load the completed model weights from your previous 114-epoch run
+    print(f"Loading pre-trained weights from {OUTPUT_DIR / 'best_model.pt'}...")
+    model.load_state_dict(torch.load(OUTPUT_DIR / 'best_model.pt', map_location='cpu', weights_only=True))
+    # 3. Load the computed normalization statistics
+    print("Loading calculated training normalization profiles...")
+    mean = np.load(OUTPUT_DIR / 'norm_mean.npy')
+    std  = np.load(OUTPUT_DIR / 'norm_std.npy')
+
+    # 4. Run the fixed evaluation loop on the test directory
+    avg = evaluate_dataset(
+        model=model,
+        mean=mean,
+        std=std,
+        clean_dir=CLEAN_DIR,
+        noisy_dir=NOISY_DIR,
+        context_frames=context_frames,
+    )
+
+    print_results(avg, model_name="MLP (IRM)")
+
+    # 5. Save evaluation output metrics cleanly
+    output = {
+        "model": "MLP (IRM masking)",
+        "hyperparameters": {
+            "context_frames": context_frames,
+            "hidden_dim": 1024,
+            "n_layers": 4,
+            "dropout": 0.2,
+            "lr": 1e-3,
+            "batch_size": 2048,
+        },
+        "n_files": 824,
+        "metrics": avg,
+    }
+    results_path = RESULTS_DIR / "mlp.json"
+    with open(results_path, "w") as f:
+        json.dump(output, f, indent=2)
+    print(f"\nResults saved to {results_path}")
+
+    # 6. Compare against baselines
+    baseline_path = RESULTS_DIR / "noisy_baseline.json"
+    ss_path = RESULTS_DIR / "spectral_subtraction.json"
+
+    if baseline_path.exists() and ss_path.exists():
+        with open(baseline_path) as f:
+            baseline = json.load(f)["metrics"]
+        with open(ss_path) as f:
+            ss = json.load(f)["metrics"]
+
+        print("\nComparison Table:")
+        print(f"  {'Metric':<10} {'Baseline':>10} {'SS':>10} {'MLP':>10}")
+        print(f"  {'-'*42}")
+        for metric, score in avg.items():
+            b = baseline.get(metric, float('nan'))
+            s = ss.get(metric, float('nan'))
+            print(f"  {metric:<10} {b:>10.4f} {s:>10.4f} {score:>10.4f}")
 
 if __name__ == "__main__":
     main()

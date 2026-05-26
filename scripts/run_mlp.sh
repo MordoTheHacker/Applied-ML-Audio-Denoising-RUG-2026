@@ -2,11 +2,11 @@
 #SBATCH --job-name=audio_mlp
 #SBATCH --output=logs/mlp_%j.log
 #SBATCH --error=logs/mlp_%j.err
-#SBATCH --partition=gpushort
-#SBATCH --gres=gpu:a100:1
-#SBATCH --time=02:00:00
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=64G
+#SBATCH --partition=gpu
+#SBATCH --gpus-per-node=v100:1
+#SBATCH --time=00:10:00
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=32G
 
 # ─────────────────────────────────────────────
 # run_mlp.sh `sbatch --export=ALL,GITHUB_TOKEN="ghp_tokenHere" scripts/run_mlp.sh`
@@ -26,37 +26,25 @@ echo "Setting up environment..."
 
 cd /scratch/s4697103/AppliedML/Applied-ML-Audio-Denoising-RUG-2026 || exit 1
 
+# 1. Purge completely and load the official RUG Python-DataScience toolchain
 module purge
-module load Python/3.11.3-GCCcore-12.3.0
-module load CUDA/12.4.0
+module load PyTorch/2.1.2-foss-2023a-CUDA-12.1.1
 
+# 2. Recreate your virtual environment, using cluster packages as the base
 rm -rf env
-
-python -m venv env
+python -m venv --system-site-packages env
 source env/bin/activate
 
-# Create directories inside the repository workspace
-mkdir -p logs
-mkdir -p outputs/models/mlp
-mkdir -p outputs/results
+# 3. Clean up installation order
+# Force NumPy down to 1.x immediately so packages compiling from source match
+pip install "numpy<2" 
 
+# Install your dependencies, ignoring pre-installed torch/numpy versions
+pip install -r requirements.txt --ignore-installed librosa soundfile tqdm pesq
+
+# Verify sanity check outputs
 echo "Python: $(which python)"
-echo "Python version: $(python --version)"
-
-pip install "numpy<2" --quiet
-pip install torch==2.1.0 torchvision==0.16.0 --index-url https://download.pytorch.org/whl/cu121
-pip install -r requirements.txt --quiet
-
-python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
-
-echo ""
-python -c "
-import torch
-print(f'GPU available: {torch.cuda.is_available()}')
-if torch.cuda.is_available():
-    print(f'GPU: {torch.cuda.get_device_name(0)}')
-    print(f'VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB')
-"
+python -c "import torch; print('Torch Version:', torch.__version__); print('CUDA Available:', torch.cuda.is_available())"
 
 # ── Check Prerequisites ────────────────────────
 
