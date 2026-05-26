@@ -528,7 +528,6 @@ def main():
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    """
     # 1. Load the complete training dataset profile
     print("\nLoading master dataset...")
     full_train_ds = IRMDataset(TRAIN_NPZ, context_frames=5)
@@ -601,80 +600,7 @@ def main():
         json.dump(output, f, indent=2)
     print(f"\nResults saved to {results_path}")
 
-
     # Compare against baselines
-    baseline_path = RESULTS_DIR / "noisy_baseline.json"
-    ss_path = RESULTS_DIR / "spectral_subtraction.json"
-
-    if baseline_path.exists() and ss_path.exists():
-        with open(baseline_path) as f:
-            baseline = json.load(f)["metrics"]
-        with open(ss_path) as f:
-            ss = json.load(f)["metrics"]
-
-        print("\nComparison Table:")
-        print(f"  {'Metric':<10} {'Baseline':>10} {'SS':>10} {'MLP':>10}")
-        print(f"  {'-'*42}")
-        for metric, score in avg.items():
-            b = baseline.get(metric, float('nan'))
-            s = ss.get(metric, float('nan'))
-            print(f"  {metric:<10} {b:>10.4f} {s:>10.4f} {score:>10.4f}")
-    """
-    # 1. SKIP TRAINING - Directly initialize the architecture shell
-    print("\nSkipping training! Initializing SpeechMLP structure...")
-    n_bins = 257  # Your frequency bins count
-    context_frames = 5
-    window_size = 2 * context_frames + 1
-    input_dim = window_size * n_bins
-
-    model = SpeechMLP(
-        input_dim=input_dim,
-        output_dim=n_bins,
-        hidden_dim=1024,
-        n_layers=4,
-        dropout=0.2,
-    ).to(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
-
-    # 2. Load the completed model weights from your previous 114-epoch run
-    print(f"Loading pre-trained weights from {OUTPUT_DIR / 'best_model.pt'}...")
-    model.load_state_dict(torch.load(OUTPUT_DIR / 'best_model.pt', map_location='cpu', weights_only=True))
-    # 3. Load the computed normalization statistics
-    print("Loading calculated training normalization profiles...")
-    mean = np.load(OUTPUT_DIR / 'norm_mean.npy')
-    std  = np.load(OUTPUT_DIR / 'norm_std.npy')
-
-    # 4. Run the fixed evaluation loop on the test directory
-    avg = evaluate_dataset(
-        model=model,
-        mean=mean,
-        std=std,
-        clean_dir=CLEAN_DIR,
-        noisy_dir=NOISY_DIR,
-        context_frames=context_frames,
-    )
-
-    print_results(avg, model_name="MLP (IRM)")
-
-    # 5. Save evaluation output metrics cleanly
-    output = {
-        "model": "MLP (IRM masking)",
-        "hyperparameters": {
-            "context_frames": context_frames,
-            "hidden_dim": 1024,
-            "n_layers": 4,
-            "dropout": 0.2,
-            "lr": 1e-3,
-            "batch_size": 2048,
-        },
-        "n_files": 824,
-        "metrics": avg,
-    }
-    results_path = RESULTS_DIR / "mlp.json"
-    with open(results_path, "w") as f:
-        json.dump(output, f, indent=2)
-    print(f"\nResults saved to {results_path}")
-
-    # 6. Compare against baselines
     baseline_path = RESULTS_DIR / "noisy_baseline.json"
     ss_path = RESULTS_DIR / "spectral_subtraction.json"
 
