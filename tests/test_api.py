@@ -55,7 +55,7 @@ def test_list_models():
     models = r.json()
     names = [m["name"] for m in models]
     assert "spectral_subtraction" in names
-    assert "geometric_subtraction" in names
+    assert "geometric_spectral_subtraction" in names
     assert "mlp" in names
     assert "unet" in names
 
@@ -85,10 +85,10 @@ def test_enhance_spectral_subtraction():
     assert sr == SR
     assert len(audio) > 0
 
-def test_enhance_geometric_subtraction():
+def test_enhance_geometric_spectral_subtraction():
     wav = make_wav()
     r = client.post(
-        "/enhance?model=geometric_subtraction",
+        "/enhance?model=geometric_spectral_subtraction",
         files={"file": ("test.wav", wav, "audio/wav")},
     )
     assert r.status_code == 200
