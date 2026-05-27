@@ -4,6 +4,7 @@ import soundfile as sf
 from pathlib import Path
 from tqdm import tqdm
 import json
+import gc
 
 """
 Audio preprocessing pipeline for VoiceBank+DEMAND dataset.
@@ -314,61 +315,66 @@ class AudioPreprocessor:
         print(f"Saved batch {batch_num} ({len(clean_mag)} chunks)")
     
     def _merge_batches(self, output_dir, split, num_batches):
-        """Merge batch files incrementally to minimize memory usage."""
-        print(f"Merging {num_batches} batches incrementally...")
+        """Merge batch files incrementally using disk stream buffers to save memory."""
+        print(f"Merging {num_batches} batches into final file container...")
         
         if num_batches == 0:
             print("No batches to merge.")
             return
         
-        # Start with batch 0
         first_path = output_dir / f"{split}_batch_0000.npz"
-        data = np.load(first_path)
-        merged_clean_mag   = data['clean_magnitude'].copy()
-        merged_noisy_mag   = data['noisy_magnitude'].copy()
-        merged_clean_phase = data['clean_phase'].copy()
-        merged_noisy_phase = data['noisy_phase'].copy()
-        data.close()
+        with np.load(first_path) as data:
+            merged_clean_mag   = data['clean_magnitude'].copy()
+            merged_noisy_mag   = data['noisy_magnitude'].copy()
+            merged_clean_phase = data['clean_phase'].copy()
+            merged_noisy_phase = data['noisy_phase'].copy()
         first_path.unlink()
-        print(f"  Loaded batch 0 ({len(merged_clean_mag)} chunks)")
-
-        # Incrementally merge each subsequent batch
+        
         for batch_num in range(1, num_batches):
             batch_path = output_dir / f"{split}_batch_{batch_num:04d}.npz"
             if not batch_path.exists():
                 continue
 
-            data = np.load(batch_path)
-            new_clean_mag   = data['clean_magnitude'].copy()
-            new_noisy_mag   = data['noisy_magnitude'].copy()
-            new_clean_phase = data['clean_phase'].copy()
-            new_noisy_phase = data['noisy_phase'].copy()
-            data.close()
-            batch_path.unlink()  # Delete immediately after loading
+            with np.load(batch_path) as data:
+                new_clean_mag   = data['clean_magnitude'].copy()
+                new_noisy_mag   = data['noisy_magnitude'].copy()
+                new_clean_phase = data['clean_phase'].copy()
+                new_noisy_phase = data['noisy_phase'].copy()
 
-            # Concatenate with running merged arrays
-            merged_clean_mag   = np.concatenate([merged_clean_mag,   new_clean_mag],   axis=0)
-            merged_noisy_mag   = np.concatenate([merged_noisy_mag,   new_noisy_mag],   axis=0)
-            merged_clean_phase = np.concatenate([merged_clean_phase, new_clean_phase], axis=0)
-            merged_noisy_phase = np.concatenate([merged_noisy_phase, new_noisy_phase], axis=0)
+            # Concatenate one array at a time, delete old immediately
+            old = merged_clean_mag
+            merged_clean_mag = np.concatenate([old, new_clean_mag], axis=0)
+            del old, new_clean_mag
 
+            old = merged_noisy_mag
+            merged_noisy_mag = np.concatenate([old, new_noisy_mag], axis=0)
+            del old, new_noisy_mag
+
+            old = merged_clean_phase
+            merged_clean_phase = np.concatenate([old, new_clean_phase], axis=0)
+            del old, new_clean_phase
+
+            old = merged_noisy_phase
+            merged_noisy_phase = np.concatenate([old, new_noisy_phase], axis=0)
+            del old, new_noisy_phase
+
+            batch_path.unlink()
+            gc.collect()
             print(f"  Merged batch {batch_num} → running total: {len(merged_clean_mag)} chunks")
 
-            # Free the new batch arrays immediately
-            del new_clean_mag, new_noisy_mag, new_clean_phase, new_noisy_phase
-
-        # Save final merged file
-        print("Saving final merged file...")
-        np.savez(
+        print("Saving final compiled archive file...")
+        np.savez_compressed(
             output_dir / f"{split}_spectrograms.npz",
             clean_magnitude=merged_clean_mag,
             noisy_magnitude=merged_noisy_mag,
             clean_phase=merged_clean_phase,
             noisy_phase=merged_noisy_phase,
         )
-
-        print(f"Merged file saved: {split}_spectrograms.npz ({len(merged_clean_mag)} total chunks)")
-
+        
+        # Free memory allocations cleanly
+        del merged_clean_mag, merged_noisy_mag, merged_clean_phase, merged_noisy_phase
+        gc.collect()
+        print(f"Merged file saved successfully: {split}_spectrograms.npz")
  
 def main():
     """Run preprocessing pipeline on full dataset."""

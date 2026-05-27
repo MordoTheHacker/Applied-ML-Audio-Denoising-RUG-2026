@@ -1,0 +1,21 @@
+{
+  "model": "MLP (IRM masking)",
+  "hyperparameters": {
+    "context_frames": 5,
+    "hidden_dim": 1024,
+    "n_layers": 4,
+    "dropout": 0.2,
+    "lr": 0.001,
+    "batch_size": 2048
+  },
+  "n_files": 824,
+  "metrics": {
+    "PESQ": 2.0878725140129477,
+    "STOI": 0.8864539185047645,
+    "CSIG": 4.242712164307764,
+    "CBAK": 2.6380726357620006,
+    "COVL": 3.2254100417062723,
+    "SSNR": 2.7734424536553965,
+    "SI_SDR": 8.575564409735147
+  }
+}
