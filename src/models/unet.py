@@ -286,9 +286,9 @@ def train_unet(
     dropout_dec: float = 0.1,
     lr: float = 1e-4,
     weight_decay: float = 1e-2,
-    batch_size: int = 16,
-    max_epochs: int = 50,
-    patience: int = 5,
+    batch_size: int = 128,
+    max_epochs: int = 150,
+    patience: int = 15,
 ) -> UNet:
     """
     Train the U-Net with AdamW, MSE+L1 loss, and early stopping.
@@ -351,7 +351,7 @@ def train_unet(
         model.parameters(), lr=lr, weight_decay=weight_decay
     )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=3
+        optimizer, mode='min', factor=0.5, patience=5
     )
 
     train_losses = []
@@ -590,9 +590,9 @@ def main():
         dropout_dec=0.1,
         lr=1e-4,
         weight_decay=1e-2,
-        batch_size=16,
+        batch_size=128,
         max_epochs=50,
-        patience=5,
+        patience=15,
     )
 
     mean = load_scalar(OUTPUT_DIR / 'norm_mean.npy')
@@ -620,7 +620,7 @@ def main():
             "dropout_dec": 0.1,
             "lr": 1e-4,
             "weight_decay": 1e-2,
-            "batch_size": 16,
+            "batch_size": 128,
         },
         "n_files": 824,
         "metrics": avg,
