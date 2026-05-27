@@ -20,7 +20,7 @@ from enum import Enum
 from contextlib import asynccontextmanager
 
 from models.spectral_subtraction import SpectralSubtraction
-from models.geometric_subtraction import GeometricSpectralSubtraction
+from models.geometric_spectral_subtraction import GeometricSpectralSubtraction
 from models.mlp import SpeechMLP
 from models.mlp import enhance_file as mlp_enhance
 from models.unet import UNet
@@ -70,7 +70,7 @@ RESULTS_DIR = Path("outputs/results")
 
 class ModelName(str, Enum):
     spectral_subtraction = "spectral_subtraction"
-    geometric_subtraction = "geometric_subtraction"
+    geometric_spectral_subtraction = "geometric_spectral_subtraction"
     mlp = "mlp"
     unet = "unet"
 
@@ -89,7 +89,7 @@ def load_spectral_subtraction():
         beta=0.002,
     )
 
-def load_geometric_subtraction():
+def load_geometric_spectral_subtraction():
     """Load geometric spectral subtraction model"""
     return GeometricSpectralSubtraction(sr=SR)
 
@@ -163,8 +163,8 @@ def get_model(model_name: ModelName):
         try:
             if model_name == ModelName.spectral_subtraction:
                 _model_cache[model_name] = load_spectral_subtraction()
-            elif model_name == ModelName.geometric_subtraction:
-                _model_cache[model_name] = load_geometric_subtraction()
+            elif model_name == ModelName.geometric_spectral_subtraction:
+                _model_cache[model_name] = load_geometric_spectral_subtraction()
             elif model_name == ModelName.mlp:
                 _model_cache[model_name] = load_mlp()
             elif model_name == ModelName.unet:
@@ -184,7 +184,7 @@ def get_model(model_name: ModelName):
 
 def check_model_available(model_name: ModelName) -> bool:
     """Check if model weights exist on disk."""
-    if model_name in (ModelName.spectral_subtraction, ModelName.geometric_subtraction):
+    if model_name in (ModelName.spectral_subtraction, ModelName.geometric_spectral_subtraction):
         return True  # No weights needed
     weights = MODELS_DIR / model_name.value / "best_model.pt"
     return weights.exists()
@@ -202,7 +202,7 @@ async def lifespan(app: FastAPI):
 
     classical_models = [
         ModelName.spectral_subtraction,
-        ModelName.geometric_subtraction
+        ModelName.geometric_spectral_subtraction
     ]
 
     for model in classical_models:
@@ -241,14 +241,14 @@ such noise using one of four available methods:
 | Model | Type | Description |
 |-------|------|-------------|
 | `spectral_subtraction` | Classical | Boll (1979). Fast, no GPU required |
-| `geometric_subtraction` | Classical |
+| `geometric_spectral_subtraction` | Classical |
 | `mlp` | ML | Frame-level MLP with IRM masking |
 | `unet` | ML | U-Net with skip connections |
 
 ### How to Use
 
 1. Upload a noisy `.wav` audio file to `/enhance`
-2. Choose a model (`spectral_subtraction`, `geometric_subtraction`, `mlp`, or `unet`)
+2. Choose a model (`spectral_subtraction`, `geometric_spectral_subtraction`, `mlp`, or `unet`)
 3. Receive the enhanced audio file as a downloadable `.wav`
 4. Optionally use `/evaluate` to also receive quality metrics (PESQ, STOI, etc.)
 
@@ -346,7 +346,7 @@ def enhance_audio(y: np.ndarray, model_name: ModelName) -> np.ndarray:
         model = get_model(model_name)
         return model.enhance(y)
     
-    elif model_name == ModelName.geometric_subtraction:
+    elif model_name == ModelName.geometric_spectral_subtraction:
         model = get_model(model_name)
         return model.enhance(y)
 
@@ -491,7 +491,7 @@ def list_models():
                       "IEEE Trans. Acoustics, Speech, Signal Process.",
         ),
         ModelInfo(
-            name="geometric_subtraction",
+            name="geometric_spectral_subtraction",
             type="classical",
             description=(
                 "Geometric spectral subtraction (Lu & Loizou, 2008). Improves on standard "
@@ -579,7 +579,7 @@ Upload a noisy audio file and receive a denoised version.
 
 **Request:**
 - `file`: Audio file (WAV, FLAC, MP3, or OGG)
-- `model`: Denoising model to use (`spectral_subtraction`, `geometric_subtraction`, `mlp`, or `unet`)
+- `model`: Denoising model to use (`spectral_subtraction`, `geometric_spectral_subtraction`, `mlp`, or `unet`)
 
 **Response:**
 - Enhanced audio file as a downloadable WAV (16kHz, 16-bit PCM)
