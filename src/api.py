@@ -241,7 +241,7 @@ such noise using one of four available methods:
 | Model | Type | Description |
 |-------|------|-------------|
 | `spectral_subtraction` | Classical | Boll (1979). Fast, no GPU required |
-| `geometric_subtraction` | Classical |
+| `geometric_subtraction` | Classical | Lu & Loizou (2008). Geometric gain function, less musical noise |
 | `mlp` | ML | Frame-level MLP with IRM masking |
 | `unet` | ML | U-Net with skip connections |
 
@@ -583,13 +583,18 @@ Upload a noisy audio file and receive a denoised version.
 
 **Response:**
 - Enhanced audio file as a downloadable WAV (16kHz, 16-bit PCM)
-- Response headers contain processing metadata
+- Response headers contain processing metadata:
+    - `X-Model-Used` (str): model name used for enhancement
+    - `X-Input-Duration` (float): input audio duration in seconds
+    - `X-Output-Duration` (float): output audio duration in seconds
+    - `X-Processing-Time` (float): server processing time in seconds
+    - `X-Sample-Rate` (int): sample rate of returned audio (always 16000)
 
 **Notes:**
 - Audio is automatically converted to mono and resampled to 16kHz
 - Maximum duration: 60 seconds
 - Maximum file size: 50 MB
-    """,
+""",
     tags=["Enhancement"],
     responses={
         200: {"description": "Enhanced WAV audio file"},
