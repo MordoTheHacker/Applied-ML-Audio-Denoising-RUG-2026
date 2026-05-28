@@ -142,8 +142,8 @@ def load_unet():
             "Train the model first: python src/models/unet.py"
         )
 
-    mean = float(np.load(mean_path))
-    std  = float(np.load(std_path))
+    mean = np.load(mean_path)
+    std  = np.load(std_path)
 
     model = UNet(
         base_filters=32,
