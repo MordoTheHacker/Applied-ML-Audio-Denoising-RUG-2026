@@ -142,8 +142,11 @@ def load_unet():
             "Train the model first: python src/models/unet.py"
         )
 
-    mean = float(np.load(mean_path))
-    std  = float(np.load(std_path))
+    mean = np.load(mean_path)
+    std = np.load(std_path)
+
+    mean = float(np.mean(mean))
+    std = float(np.mean(std))
 
     model = UNet(
         base_filters=32,
@@ -241,7 +244,7 @@ such noise using one of four available methods:
 | Model | Type | Description |
 |-------|------|-------------|
 | `spectral_subtraction` | Classical | Boll (1979). Fast, no GPU required |
-| `geometric_subtraction` | Classical | Lu & Loizou (2008). Geometric gain function, less musical noise |
+| `geometric_subtraction` | Classical |
 | `mlp` | ML | Frame-level MLP with IRM masking |
 | `unet` | ML | U-Net with skip connections |
 
@@ -583,18 +586,13 @@ Upload a noisy audio file and receive a denoised version.
 
 **Response:**
 - Enhanced audio file as a downloadable WAV (16kHz, 16-bit PCM)
-- Response headers contain processing metadata:
-    - `X-Model-Used` (str): model name used for enhancement
-    - `X-Input-Duration` (float): input audio duration in seconds
-    - `X-Output-Duration` (float): output audio duration in seconds
-    - `X-Processing-Time` (float): server processing time in seconds
-    - `X-Sample-Rate` (int): sample rate of returned audio (always 16000)
+- Response headers contain processing metadata
 
 **Notes:**
 - Audio is automatically converted to mono and resampled to 16kHz
 - Maximum duration: 60 seconds
 - Maximum file size: 50 MB
-""",
+    """,
     tags=["Enhancement"],
     responses={
         200: {"description": "Enhanced WAV audio file"},
@@ -633,8 +631,6 @@ def enhance(
     # Enhance
     try:
         enhanced = enhance_audio(y, model)
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Enhancement failed: {e}")
         raise HTTPException(
@@ -737,8 +733,6 @@ def evaluate(
     # Enhance
     try:
         enhanced = enhance_audio(noisy, model)
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Enhancement failed: {str(e)}")
 
