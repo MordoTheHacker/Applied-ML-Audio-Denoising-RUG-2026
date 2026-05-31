@@ -2,15 +2,13 @@
 #SBATCH --job-name=audio_unet
 #SBATCH --output=logs/unet_%j.log
 #SBATCH --error=logs/unet_%j.err
-#SBATCH --partition=gpushort
-#SBATCH --gres=gpu:a100:1
-#SBATCH --time=03:00:00
+#SBATCH --partition=gpumedium
+#SBATCH --gpus-per-node=a100:1
+#SBATCH --time=06:00:00
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=48G
+#SBATCH --mem=64G
 
-# ─────────────────────────────────────────────
 # run_unet.sh `sbatch --export=ALL,GITHUB_TOKEN='ghp_tokenHere' scripts/run_unet.sh`
-# ─────────────────────────────────────────────
 
 echo "============================================="
 echo "  Audio Denoising — U-Net Training"
@@ -19,7 +17,7 @@ echo "  Node:   $SLURMD_NODENAME"
 echo "  Start:  $(date)"
 echo "============================================="
 
-# ── Environment Setup ──────────────────────────
+# Environment Setup
 
 echo ""
 echo "Setting up environment..."
@@ -39,20 +37,17 @@ echo "Working directory: $(pwd)"
 echo "Python: $(which python)"
 echo "Python version: $(python --version)"
 
-# Upgrade/verify PyTorch environment quietly
+pip install --upgrade pip
+pip install "numpy<2.0.0"
+
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --quiet
+
+pip install --force-reinstall pesq
 pip install -r requirements.txt --quiet
 
 echo ""
-python -c "
-import torch
-print(f'GPU available: {torch.cuda.is_available()}')
-if torch.cuda.is_available():
-    print(f'GPU: {torch.cuda.get_device_name(0)}')
-    print(f'VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB')
-"
 
-# ── Check Prerequisites ────────────────────────
+# Check Prerequisites
 
 echo ""
 echo "Checking prerequisites..."
@@ -66,15 +61,13 @@ fi
 echo "  train_spectrograms.npz: found"
 echo "  test_spectrograms.npz:  found"
 
-# ── Check if already trained ──────────────────
+# Check if already trained
 
 if [ -f "outputs/models/unet/best_model.pt" ]; then
     echo ""
     echo "WARNING: outputs/models/unet/best_model.pt already exists."
     echo "Delete it to retrain. Skipping script actions."
 else
-
-    # ── Train U-Net ───────────────────────────────
 
     echo ""
     echo "============================================="
@@ -104,7 +97,6 @@ print(f'  Best val loss: {log[\"best_val_loss\"]:.6f}')
 print(f'  Total epochs:  {len(log[\"train_losses\"])}')
 "
 
-    # ── Push to GitHub (optional) ─────────────────
     # Triggers only if training succeeded AND GITHUB_TOKEN variable was passed
 
     if [ -n "$GITHUB_TOKEN" ]; then

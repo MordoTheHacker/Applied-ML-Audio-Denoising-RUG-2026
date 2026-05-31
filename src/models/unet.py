@@ -1,4 +1,3 @@
-import os
 import numpy as np
 import torch
 import torch.nn as nn
@@ -73,61 +72,57 @@ class SpectrogramDataset(Dataset):
         std:      Global std for input standardization (from train set)
     """
 
-    def __init__(
-        self,
-        npz_path: Path,
-        mean: float = None,
-        std: float = None,
-    ):
+    def __init__(self, npz_path, mean=None, std=None):
         print(f"Loading {npz_path}...")
-        try:
-            data = np.load(npz_path, mmap_mode='r')
-        except Exception:
-            data = np.load(npz_path)
+        # mmap_mode='r' reads from disk on demand, no full RAM load
+        data = np.load(npz_path, mmap_mode='r')
+        
+        self.noisy_log = data['noisy_magnitude']  # (N, 256, 257) — memory mapped
+        self.clean_log = data['clean_magnitude']  # memory mapped, not copied
+        
+        n_chunks, n_frames, n_bins = self.noisy_log.shape
+        print(f"  Chunks: {n_chunks}, Shape: ({n_frames}, {n_bins})")
 
-        # Shape: (N, time_frames, freq_bins) = (N, 256, 257)
-        noisy_log = data['noisy_magnitude'][:, :, :256]
-        clean_log = data['clean_magnitude'][:, :, :256]
-        self._data = data
-
-        n_chunks, n_frames, n_bins = noisy_log.shape
-        print(f"  Chunks: {n_chunks}, Shape per chunk: ({n_frames}, {n_bins})")
-
-        # Keep on-disk or lazy views and avoid a full-memory IRM buffer
-        self.noisy_log = noisy_log
-        self.clean_log = clean_log
-
-        # Compute normalization stats
+        # Compute normalization stats on a sample to avoid loading everything
         if mean is None or std is None:
-            print("  Computing normalization statistics...")
-            self.mean = float(np.mean(self.noisy_log))
-            self.std  = float(np.std(self.noisy_log)) + 1e-8
+            print("  Computing normalization stats from sample...")
+            sample = self.noisy_log[:500].astype(np.float32)
+            self.mean = float(np.mean(sample))
+            self.std  = float(np.std(sample)) + 1e-8
+            del sample
         else:
             self.mean = float(mean)
             self.std  = float(std)
 
         print(f"  Total chunks: {n_chunks:,}")
-        print(f"  Input mean: {self.mean:.4f}, std: {self.std:.4f}")
+        print(f"  mean={self.mean:.4f}, std={self.std:.4f}")
 
     def __len__(self):
         return len(self.noisy_log)
 
     def __getitem__(self, idx):
-        noisy_log = self.noisy_log[idx]
-        clean_log = self.clean_log[idx]
+        # Load only one chunk at a time from disk
+        noisy_log = self.noisy_log[idx].astype(np.float32)  # (256, 257)
+        clean_log = self.clean_log[idx].astype(np.float32)
 
-        # Compute IRM on the fly to avoid storing a second huge array in memory
-        clean_mag = np.exp(clean_log).astype(np.float32)
-        noisy_mag = np.exp(noisy_log).astype(np.float32)
+        # Drop 257th bin and transpose
+        noisy_log = noisy_log[:, :256].T  # (256, 256)
+        clean_log = clean_log[:, :256].T
+
+        # Compute IRM on the fly for this chunk only
+        clean_mag   = np.exp(clean_log)
+        noisy_mag   = np.exp(noisy_log)
         clean_power = clean_mag ** 2
         noise_power = np.maximum(noisy_mag ** 2 - clean_power, 1e-10)
-        irm = np.sqrt(clean_power / (clean_power + noise_power + 1e-10))
-        irm = np.clip(irm, 0.0, 1.0).astype(np.float32)
+        irm = np.clip(
+            np.sqrt(clean_power / (clean_power + noise_power + 1e-10)),
+            0.0, 1.0
+        ).astype(np.float32)
 
-        # Normalize input and convert to tensor
-        x = torch.tensor((noisy_log - self.mean) / self.std, dtype=torch.float32).unsqueeze(0)
+        # Normalize and add channel dim
+        x = torch.tensor((noisy_log - self.mean) / self.std,
+                        dtype=torch.float32).unsqueeze(0)
         y = torch.tensor(irm, dtype=torch.float32).unsqueeze(0)
-
         return x, y
 
 # ─────────────────────────────────────────────
@@ -176,8 +171,8 @@ class DecoderBlock(nn.Module):
     """
     def __init__(self, in_channels: int, out_channels: int, dropout: float = 0.0):
         super().__init__()
-        self.up   = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.conv = ConvBlock(in_channels, out_channels, dropout)
+        self.up   = nn.ConvTranspose2d(in_channels , out_channels, kernel_size=2, stride=2)
+        self.conv = ConvBlock(out_channels * 2, out_channels, dropout)
 
     def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
         x = self.up(x)
@@ -228,10 +223,10 @@ class UNet(nn.Module):
         self.bottleneck = ConvBlock(f*8, f*16, dropout_bottleneck)  # (B,512,16, 16)
 
         # Decoder: in_channels = bottleneck + skip channels
-        self.dec4 = DecoderBlock(f*16 + f*8, f*8,  dropout_dec)   # (B,256,32, 32)
-        self.dec3 = DecoderBlock(f*8  + f*4, f*4,  dropout_dec)   # (B,128,64, 64)
-        self.dec2 = DecoderBlock(f*4  + f*2, f*2,  dropout_dec)   # (B,64, 128,128)
-        self.dec1 = DecoderBlock(f*2  + f,   f,    dropout_dec)   # (B,32, 256,256)
+        self.dec4 = DecoderBlock(f*16, f*8,  dropout_dec)   # up: 512→256, cat with skip4(256)→512, conv→256
+        self.dec3 = DecoderBlock(f*8, f*4,  dropout_dec)   # up: 256→128, cat with skip3(128)→256, conv→128
+        self.dec2 = DecoderBlock(f*4, f*2,  dropout_dec)   # up: 128→64,  cat with skip2(64) →128, conv→64
+        self.dec1 = DecoderBlock(f*2,   f,    dropout_dec)   # up: 64→32,   cat with skip1(32) →64,  conv→32
 
         # Output: 1x1 conv -> single channel IRM mask
         self.output = nn.Sequential(
@@ -277,8 +272,8 @@ class UNet(nn.Module):
 # ─────────────────────────────────────────────
 
 def train_unet(
-    train_npz: Path,
-    val_npz: Path,
+    train_ds: Dataset,
+    val_ds: Dataset,
     output_dir: Path,
     base_filters: int = 32,
     dropout_enc: float = 0.1,
@@ -286,7 +281,7 @@ def train_unet(
     dropout_dec: float = 0.1,
     lr: float = 1e-4,
     weight_decay: float = 1e-2,
-    batch_size: int = 128,
+    batch_size: int = 16,
     max_epochs: int = 150,
     patience: int = 15,
 ) -> UNet:
@@ -302,29 +297,26 @@ def train_unet(
         print(f"GPU: {torch.cuda.get_device_name(0)}")
         print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 
-    # Datasets
-    print("\nLoading training data...")
-    train_ds = SpectrogramDataset(train_npz)
-
-    print("\nLoading validation data...")
-    val_ds = SpectrogramDataset(val_npz, mean=train_ds.mean, std=train_ds.std)
-
     # Save normalization stats
-    np.save(output_dir / 'norm_mean.npy', np.array([train_ds.mean]))
-    np.save(output_dir / 'norm_std.npy',  np.array([train_ds.std]))
+    base_ds = train_ds.dataset if hasattr(train_ds, 'dataset') else train_ds
+    np.save(output_dir / 'norm_mean.npy', np.array([base_ds.mean]))
+    np.save(output_dir / 'norm_std.npy',  np.array([base_ds.std]))
 
-    use_workers = False if os.name == 'nt' else True
-    worker_count = 2 if (use_workers and device.type == 'cuda') else 0
+    num_workers = 4 if (device.type == 'cuda') else 0
 
     train_loader = DataLoader(
         train_ds, batch_size=batch_size, shuffle=True,
-        num_workers=worker_count,
+        num_workers=num_workers,
         pin_memory=(device.type == 'cuda'),
+        persistent_workers=(num_workers > 0),
+        prefetch_factor=2 if num_workers > 0 else None,
     )
     val_loader = DataLoader(
         val_ds, batch_size=batch_size, shuffle=False,
-        num_workers=worker_count,
+        num_workers=num_workers,
         pin_memory=(device.type == 'cuda'),
+        persistent_workers=(num_workers > 0),
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
     # Model
@@ -514,7 +506,7 @@ def enhance_file(
     mask_full[:256, :] = mask_256
 
     # Apply mask and reconstruct
-    enhanced_mag = noisy_mag_full * mask_full
+    enhanced_mag = np.maximum(noisy_mag_full * mask_full, 1e-7)
     D_enhanced   = enhanced_mag * np.exp(1j * noisy_phase)
     enhanced     = librosa.istft(D_enhanced, hop_length=hop_length, length=len(y))
 
@@ -560,15 +552,6 @@ def evaluate_dataset(
     avg = {k: float(np.mean(v)) for k, v in all_results.items() if v}
     return avg
 
-def load_scalar(path):
-    arr = np.load(path, allow_pickle=True)
-
-    # handle scalar saved as array or 0-d tensor
-    if isinstance(arr, np.ndarray):
-        return float(arr.item() if arr.ndim == 0 or arr.size == 1 else arr.reshape(-1)[0])
-
-    return float(arr)
-
 def main():
     TRAIN_NPZ   = Path("data/processed/train_spectrograms.npz")
     TEST_NPZ    = Path("data/processed/test_spectrograms.npz")
@@ -579,10 +562,24 @@ def main():
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Load the master training dataset profile
+    print("\nLoading master training dataset...")
+    full_train_ds = SpectrogramDataset(TRAIN_NPZ)
+
+    # Create an isolated 80/20 train/validation split to fix the validation leak
+    train_size = int(0.8 * len(full_train_ds))
+    val_size = len(full_train_ds) - train_size
+    print(f"Splitting dataset: {train_size:,} train samples, {val_size:,} validation samples")
+    
+    generator = torch.Generator().manual_seed(69)
+    train_ds, val_ds = torch.utils.data.random_split(
+        full_train_ds, [train_size, val_size], generator=generator
+    )
+
     # Train
     model = train_unet(
-        train_npz=TRAIN_NPZ,
-        val_npz=TEST_NPZ,
+        train_ds=train_ds,
+        val_ds=val_ds,
         output_dir=OUTPUT_DIR,
         base_filters=32,
         dropout_enc=0.1,
@@ -590,13 +587,14 @@ def main():
         dropout_dec=0.1,
         lr=1e-4,
         weight_decay=1e-2,
-        batch_size=128,
-        max_epochs=50,
+        batch_size=64,
+        max_epochs=150,
         patience=15,
     )
 
-    mean = load_scalar(OUTPUT_DIR / 'norm_mean.npy')
-    std  = load_scalar(OUTPUT_DIR / 'norm_std.npy')
+    # Load normalization stats
+    mean = float(np.load(OUTPUT_DIR / 'norm_mean.npy')[0])
+    std  = float(np.load(OUTPUT_DIR / 'norm_std.npy')[0])
 
     # Evaluate
     avg = evaluate_dataset(
@@ -620,7 +618,7 @@ def main():
             "dropout_dec": 0.1,
             "lr": 1e-4,
             "weight_decay": 1e-2,
-            "batch_size": 128,
+            "batch_size": 16,
         },
         "n_files": 824,
         "metrics": avg,
