@@ -908,7 +908,7 @@ def compare_models(
         "results": results,
         "best_model": {
             "name": best_model,
-            "selection_rule": "Highest combined COVL + PESQ + STOI score",
+            "selection_rule": "Highest combined score",
             "metrics": valid_results[best_model]["metrics"] if best_model else None,
         } if best_model else None,
         "total_processing_time_seconds": round(time.time() - t0, 3),
