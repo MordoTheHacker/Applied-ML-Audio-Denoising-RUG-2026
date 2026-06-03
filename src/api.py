@@ -764,3 +764,152 @@ def evaluate(
         metrics={k: round(v, 4) for k, v in metrics.items() if not np.isnan(v)},
         above_random_baseline=above_baseline,
     )
+
+
+@app.post(
+    "/compare_models",
+    summary="Compare Multiple Models",
+    description="""
+Upload a noisy audio file and a clean reference, then evaluate multiple models side by side.
+**Request:**
+- `noisy_file`: Noisy audio file to enhance
+- `clean_file`: Clean reference audio for metric computation
+- `models`: List of models to compare (e.g., `["spectral_subtraction", "mlp", "unet"]`)
+**Response:**
+- A table comparing quality metrics across all specified models, including the noisy baseline.
+- Processing time for each model.
+**Use this endpoint when:**
+- You want to benchmark multiple models on the same audio sample
+- You want a comprehensive comparison of model performance on your specific audio
+    """,
+    response_model=dict,
+    tags=["Evaluation"],
+)
+
+def compare_models(
+    noisy_file: UploadFile = File(...),
+    clean_file: UploadFile = File(...),
+    models: list[ModelName] = Query(
+        default=[
+            ModelName.spectral_subtraction,
+            ModelName.geometric_subtraction,
+            ModelName.mlp,
+            ModelName.unet,
+        ],
+        description="Models to compare"
+    ),
+):
+    t0 = time.time()
+
+    noisy_bytes = noisy_file.file.read()
+    clean_bytes = clean_file.file.read()
+
+    noisy = validate_and_load_audio(noisy_bytes, noisy_file.filename)
+    clean = validate_and_load_audio(clean_bytes, clean_file.filename)
+
+    noisy_dur = len(noisy) / SR
+    clean_dur = len(clean) / SR
+
+    if abs(noisy_dur - clean_dur) > 1.0:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Noisy and clean audio durations differ too much "
+                   f"({noisy_dur:.2f}s vs {clean_dur:.2f}s)."
+        )
+
+    n = min(len(noisy), len(clean))
+
+    baseline_metrics = evaluate_all(clean[:n], noisy[:n], SR)
+
+    results = {}
+
+    for model in models:
+        model_start = time.time()
+
+        try:
+            enhanced = enhance_audio(noisy, model)
+
+            m = min(len(enhanced), len(clean))
+            metrics = evaluate_all(clean[:m], enhanced[:m], SR)
+
+            comparison_to_baseline = {}
+
+            for key, val in metrics.items():
+                base_val = baseline_metrics.get(key, float("nan"))
+
+                delta = (
+                    val - base_val
+                    if not (np.isnan(val) or np.isnan(base_val))
+                    else float("nan")
+                )
+
+                comparison_to_baseline[key] = {
+                    "noisy_baseline": round(base_val, 4),
+                    "enhanced": round(val, 4),
+                    "delta": round(delta, 4),
+                    "improved": bool(delta > 0) if not np.isnan(delta) else None,
+                }
+
+            results[model.value] = {
+                "metrics": {
+                    k: round(v, 4)
+                    for k, v in metrics.items()
+                    if not np.isnan(v)
+                },
+                "comparison_to_noisy_baseline": comparison_to_baseline,
+                "processing_time_seconds": round(time.time() - model_start, 3),
+            }
+
+        except Exception as e:
+            results[model.value] = {
+                "error": str(e)
+            }
+
+    # Choose best model
+    # Priority: COVL, then PESQ, then STOI
+    ranking_metrics = ["COVL", "PESQ", "STOI"]
+
+    def model_score(model_result):
+        if "metrics" not in model_result:
+            return float("-inf")
+
+        score = 0.0
+
+        for metric in ranking_metrics:
+            value = model_result["metrics"].get(metric)
+            if value is not None:
+                score += value
+
+        return score
+
+    valid_results = {
+        model_name: result
+        for model_name, result in results.items()
+        if "metrics" in result
+    }
+
+    best_model = None
+
+    if valid_results:
+        best_model = max(
+            valid_results,
+            key=lambda name: model_score(valid_results[name])
+        )
+
+    return {
+        "input_duration_seconds": round(noisy_dur, 3),
+        "sample_rate": SR,
+        "models_compared": [m.value for m in models],
+        "baseline_noisy_metrics": {
+            k: round(v, 4)
+            for k, v in baseline_metrics.items()
+            if not np.isnan(v)
+        },
+        "results": results,
+        "best_model": {
+            "name": best_model,
+            "selection_rule": "Highest combined COVL + PESQ + STOI score",
+            "metrics": valid_results[best_model]["metrics"] if best_model else None,
+        } if best_model else None,
+        "total_processing_time_seconds": round(time.time() - t0, 3),
+    }
