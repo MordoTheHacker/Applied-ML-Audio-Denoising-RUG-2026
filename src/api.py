@@ -12,8 +12,8 @@ import torch
 import tempfile, os
 import json
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Response
+from fastapi.responses import StreamingResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from typing import Optional
 from enum import Enum
@@ -25,6 +25,7 @@ from models.mlp import SpeechMLP
 from models.mlp import enhance_file as mlp_enhance
 from models.unet import UNet
 from models.unet import enhance_file as unet_enhance
+from notebooks import list_notebooks, get_notebook
 
 from evaluate import evaluate_all
 
@@ -40,6 +41,8 @@ Endpoints:
     GET  /                    — API info and health check
     GET  /models              — List available models and their status
     GET  /models/{model_name} — Info and metadata for a specific model
+    GET /notebooks            — List available Jupyter notebooks
+    GET /notebooks/{name}     — Get content of a specific notebook
     POST /enhance             — Enhance a noisy audio file
     POST /evaluate            — Enhance + compute quality metrics
     GET  /docs                — Interactive Swagger UI documentation
@@ -402,6 +405,11 @@ class ModelInfo(BaseModel):
     parameters: Optional[int] = Field(None, description="Number of trainable parameters (ML models only)")
     reference: Optional[str] = Field(None, description="Academic reference for this method")
 
+class NotebookInfo(BaseModel):
+    name: str = Field(..., description="Notebook stem name (e.g. '01_exp_data_anal')")
+    filename: str = Field(..., description="Full filename (e.g. '01_exp_data_anal.ipynb')")
+    size_bytes: int = Field(..., description="File size in bytes")
+
 class EnhanceResponse(BaseModel):
     model_used: str = Field(..., description="Name of the model used for enhancement")
     input_duration_seconds: float = Field(..., description="Duration of the input audio in seconds")
@@ -452,6 +460,8 @@ def root():
             "GET  /":                "This endpoint — health check",
             "GET  /models":          "List all available models",
             "GET  /models/{name}":   "Get info for a specific model",
+            "GET /notebooks":        "List available Jupyter notebooks",
+            "GET /notebooks/{name}": "Get content of a specific notebook",
             "POST /enhance":         "Enhance a noisy audio file",
             "POST /evaluate":        "Enhance + compute quality metrics",
             "GET  /docs":            "Interactive API documentation (Swagger UI)",
@@ -570,6 +580,38 @@ def get_model_info(model_name: ModelName):
         "training_log": training_log if training_log else None,
         "evaluation_results": eval_results if eval_results else None,
     }
+
+
+@app.get(
+    "/notebooks",
+    summary="List Notebooks",
+    description="Returns all Jupyter notebooks in the project with metadata.",
+    response_model=list[NotebookInfo],
+    tags=["Notebooks"],
+)
+def list_notebooks_endpoint():
+    return list_notebooks()
+
+
+@app.get(
+    "/notebooks/{name}",
+    summary="Download Notebook",
+    description="Download a notebook as .ipynb file.",
+    tags=["Notebooks"],
+    responses={
+        404: {"model": ErrorResponse, "description": "Notebook not found"},
+    },
+)
+def get_notebook_endpoint(name: str):
+    try:
+        notebook = get_notebook(name)
+        return Response(
+            content=json.dumps(notebook),
+            media_type="application/x-ipynb+json",
+            headers={"Content-Disposition": f'attachment; filename="{name}.ipynb"'}
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Notebook '{name}' not found")
 
 @app.post(
     "/enhance",
