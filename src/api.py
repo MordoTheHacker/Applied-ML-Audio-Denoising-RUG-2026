@@ -841,7 +841,7 @@ def compare_models(
     models: list[ModelName] = Query(
         default=[
             ModelName.spectral_subtraction,
-            ModelName.geometric_subtraction,
+            ModelName.geometric_spectral_subtraction,
             ModelName.mlp,
             ModelName.unet,
         ],
