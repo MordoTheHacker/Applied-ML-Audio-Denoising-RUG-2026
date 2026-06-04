@@ -19,6 +19,7 @@ spectrogram-based representations of audio and are served via a REST API.
 │   ├── data.py                    # downloads VoiceBank+DEMAND
 │   ├── preprocess.py              # STFT, normalization
 │   ├── evaluate.py                # PESQ, STOI, quality metrics
+│   ├── notebooks.py               # Listing/Downloading helper functions for notebook API
 │   └── models/
 │       ├── mlp.py                 # MLP model + training
 │       ├── unet.py                # U-Net model + training
