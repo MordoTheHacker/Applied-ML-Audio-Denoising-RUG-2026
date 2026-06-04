@@ -155,6 +155,35 @@ Models are evaluated using the standard VoiceBank+DEMAND metrics:
 - **SSNR** — Segmental signal-to-noise ratio (dB)
 - **SI-SDR** — Scale-invariant signal-to-distortion ratio (dB)
 
+## Docker Deployment
+
+The API can also be run inside a Docker container for a fully isolated and reproducible environment. This avoids the need to manually install Python dependencies or system libraries such as `ffmpeg` and `libsndfile`.
+
+### 1. Build the Docker image
+
+```bash
+docker compose build
+```
+
+### 2. Run the container
+```bash
+docker compose up
+```
+
+### 3. Acess the API
+Once the container is running, the API will be available at:
+
+- API base: http://localhost:8000
+
+- Swagger UI: http://localhost:8000/docs
+
+- ReDoc: http://localhost:8000/redoc
+
+### 4. Stop the container
+```bash
+docker compose down
+```
+
 ## Team
 | Name               | Student Nr |
 |--------------------|------------|

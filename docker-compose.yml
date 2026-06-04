@@ -1,0 +1,15 @@
+services:
+  audio-api:
+    build: .
+    container_name: audio-denoising-api
+
+    ports:
+      - "8000:8000"
+
+    restart: unless-stopped
+
+    environment:
+      PYTHONUNBUFFERED: "1"
+
+    volumes:
+      - ./outputs/results:/app/outputs/results
