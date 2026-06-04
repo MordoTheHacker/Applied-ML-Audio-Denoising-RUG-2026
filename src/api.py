@@ -466,6 +466,7 @@ def root():
             "POST /evaluate":        "Enhance + compute quality metrics",
             "GET  /docs":            "Interactive API documentation (Swagger UI)",
             "GET  /redoc":           "Alternative API documentation (ReDoc)",
+            "POST /compare_models":  "Compare multiple models' performance on the same audio sample",
         },
         "supported_audio_formats": list(SUPPORTED_FORMATS),
         "max_duration_seconds": MAX_DURATION_SECONDS,
