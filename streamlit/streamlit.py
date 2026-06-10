@@ -24,6 +24,10 @@ model = st.selectbox(
     ],
 )
 
+clean_file = None
+noisy_file = None
+
+
 if mode == "Enhance audio":
     noisy_file = st.file_uploader(
         "Upload noisy audio",
@@ -31,15 +35,11 @@ if mode == "Enhance audio":
         key="noisy_file",
     )
 
-clean_file = None
-enhanced_file = None
-
 if mode == "Evaluate with clean reference":
-    noisy_file = None
-    enhanced_file = st.file_uploader(
-        "Upload enhanced audio",
+    noisy_file = st.file_uploader(
+        "Upload noisy audio",
         type=["wav", "flac", "mp3", "ogg"],
-        key="enhanced_file",
+        key="noisy_file",
     )
 
     clean_file = st.file_uploader(
@@ -55,10 +55,6 @@ if noisy_file is not None:
 if clean_file is not None:
     st.subheader("Clean reference audio")
     st.audio(clean_file, format="audio/wav")
-
-if enhanced_file is not None:
-    st.subheader("Enhanced audio")
-    st.audio(enhanced_file, format="audio/wav")
 
 if mode == "Enhance audio":
     if noisy_file is not None:
@@ -108,14 +104,14 @@ if mode == "Enhance audio":
                     st.write(response.text)
 
 elif mode == "Evaluate with clean reference":
-    if enhanced_file is not None and clean_file is not None:
+    if noisy_file is not None and clean_file is not None:
         if st.button("Evaluate model"):
             with st.spinner("Enhancing and evaluating..."):
                 files = {
                     "noisy_file": (
-                        enhanced_file.name,
-                        enhanced_file.getvalue(),
-                        enhanced_file.type,
+                        noisy_file.name,
+                        noisy_file.getvalue(),
+                        noisy_file.type,
                     ),
                     "clean_file": (
                         clean_file.name,
@@ -180,4 +176,4 @@ elif mode == "Evaluate with clean reference":
                     st.write(response.text)
 
     else:
-        st.info("Upload both an enhanced audio file and a clean reference file.")
+        st.info("Upload both a noisy audio file and a clean reference file.")
