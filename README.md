@@ -24,6 +24,7 @@ spectrogram-based representations of audio and are served via a REST API.
 │   └── models/
 │       ├── mlp.py                 # MLP model + training
 │       ├── unet.py                # U-Net model + training
+│       ├── unet_hpo.py            # Hyperparameter tuning for U-Net
 │       ├── spectral_subtraction.py
 │       ├── gridsearch_geometric_spectral_subtraction.py
 │       ├── gridsearch_spectral_subtraction.py
@@ -184,6 +185,11 @@ Once the container is running, the API will be available at:
 ### 4. Stop the container
 ```bash
 docker compose down
+```
+
+## Running Streamlit
+```bash
+streamlit run streamlit/streamlit.py
 ```
 
 ## Team
