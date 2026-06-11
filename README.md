@@ -41,6 +41,8 @@ spectrogram-based representations of audio and are served via a REST API.
 │   ├── run_data.sh            # SLURM job: download + preprocess dataset
 │   ├── run_mlp.sh             # SLURM job: train MLP on cluster (V100 GPU)
 │   └── run_unet.sh            # SLURM job: train U-Net on cluster (A100 GPU)
+├── streamlit/
+    └── streamlit.py
 ├── requirements.txt
 └── README.md
 ```
